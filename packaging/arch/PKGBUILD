@@ -33,7 +33,7 @@ depends=(
 )
 makedepends=('cargo' 'git')
 optdepends=(
-  'thunar: right-click menu entries (run clipman --write-thunar)'
+  'thunar: right-click menu entries (run clipman --write-menu)'
   'gpu-screen-recorder: recording the clips'
   'xdg-desktop-portal: folder picker in Settings'
 )

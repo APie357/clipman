@@ -10,11 +10,15 @@
 // No console window for the GUI on Windows (the CLI re-attaches to its parent's).
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+#[cfg(any(windows, test))]
+mod explorer;
 mod gpu;
 mod media;
+mod menu;
 mod player;
 mod render;
 mod settings;
+#[cfg(any(target_os = "linux", test))]
 mod thunar;
 mod ui;
 
@@ -71,9 +75,13 @@ struct Cli {
     /// Open only the Settings window.
     #[arg(long)]
     settings: bool,
-    /// Regenerate the Thunar right-click entries from the presets and exit (Linux).
+    /// Regenerate the right-click menu entries from the presets and exit (Thunar on
+    /// Linux, Explorer on Windows).
+    #[arg(long, alias = "write-thunar")]
+    write_menu: bool,
+    /// Remove clipman's right-click menu entries and exit.
     #[arg(long)]
-    write_thunar: bool,
+    remove_menu: bool,
     /// Download / verify the noise suppression model, print its path and exit.
     #[arg(long)]
     fetch_model: bool,
@@ -242,12 +250,14 @@ fn main() -> ExitCode {
     if cli.fetch_model {
         return print_or_fail(render::ensure_model().map(|p| p.display().to_string()));
     }
-    if cli.write_thunar {
+    if cli.write_menu {
         let res = std::env::current_exe()
             .map_err(anyhow::Error::from)
-            .and_then(|exe| thunar::write_actions(&Settings::load(), &exe))
-            .map(|p| p.display().to_string());
+            .and_then(|exe| menu::write(&Settings::load(), &exe));
         return print_or_fail(res);
+    }
+    if cli.remove_menu {
+        return print_or_fail(menu::remove());
     }
     if let Err(e) = media::ensure_ffmpeg() {
         error_dialog(&format!("{e:#}. Install ffmpeg and try again."));

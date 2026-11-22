@@ -126,26 +126,34 @@ impl SettingsUi {
         });
     }
 
-    #[cfg(target_os = "linux")]
-    fn regenerate_thunar(&mut self) {
+    fn regenerate_menu(&mut self) {
         let s = self.result();
         let res = s
             .save()
             .map_err(anyhow::Error::from)
-            .and_then(|_| crate::thunar::write_actions(&s, &std::env::current_exe()?));
+            .and_then(|_| crate::menu::write(&s, &std::env::current_exe()?));
         match res {
-            Ok(uca) => {
+            Ok(place) => {
                 self.applied = true;
                 let n = s.presets.iter().filter(|p| !p.is_original()).count();
-                self.message = Some(format!(
-                    "Saved settings and wrote {n} preset entr{} plus \u{201c}Open in Clipman\u{2026}\u{201d} \
-                     to {} (previous version: uca.xml.bak). Thunar shows the new menu after it restarts.",
-                    if n == 1 { "y" } else { "ies" },
-                    uca.display()
-                ));
-                self.offer_thunar_restart = true;
+                let entries = format!(
+                    "{n} preset entr{} plus \u{201c}Open in Clipman\u{2026}\u{201d}",
+                    if n == 1 { "y" } else { "ies" }
+                );
+                self.message = Some(if cfg!(windows) {
+                    format!(
+                        "Saved settings and wrote {entries} to the Explorer menu of .mp4, .mkv \
+                         and .mov files (on Windows 11: under \u{201c}Show more options\u{201d})."
+                    )
+                } else {
+                    format!(
+                        "Saved settings and wrote {entries} to {place} (previous version: \
+                         uca.xml.bak). Thunar shows the new menu after it restarts."
+                    )
+                });
+                self.offer_thunar_restart = cfg!(target_os = "linux");
             }
-            Err(e) => self.message = Some(format!("Couldn't update Thunar: {e:#}")),
+            Err(e) => self.message = Some(format!("Couldn't update the right-click menu: {e:#}")),
         }
     }
 
@@ -371,13 +379,16 @@ impl SettingsUi {
             if ui.button("Add source preset").on_hover_text("Just trims: copies the video as-is, no re-encoding").clicked() {
                 self.add_preset(PresetKind::Original);
             }
-            #[cfg(target_os = "linux")]
-            if ui
-                .button("Regenerate right-click menu")
-                .on_hover_text("Saves these settings, then rewrites Thunar's \u{201c}Clipman\u{201d} submenu: one entry per compress preset")
-                .clicked()
+            if crate::menu::SUPPORTED
+                && ui
+                    .button("Regenerate right-click menu")
+                    .on_hover_text(format!(
+                        "Saves these settings, then rewrites {}\u{2019}s \u{201c}Clipman\u{201d} submenu: one entry per compress preset",
+                        if cfg!(windows) { "Explorer" } else { "Thunar" }
+                    ))
+                    .clicked()
             {
-                self.regenerate_thunar();
+                self.regenerate_menu();
             }
         });
         ui.weak("Leave a name blank to show it as resolution + fps. Leave Max size blank for no size limit (fixed high quality instead).");

@@ -46,7 +46,12 @@ Notes for coding agents working on clipman. Read README.md first for what it doe
   keep it, so nearby steps are instant. Seek times are formatted with 6 decimals: millisecond
   rounding (0.0167 → 0.017) skipped past frames. Audio is the same `AudioPlan` decoded to f32 PCM and played through
   rodio. Includes an ignored real-clip test (see Testing).
+- `src/menu.rs`: right-click menu entry points (`--write-menu`, `--remove-menu`, the Settings
+  button), dispatching to `thunar.rs` (Linux) or `explorer.rs` (Windows).
 - `src/thunar.rs`: generates the Thunar `uca.xml` entries (`clipman-preset-<id>`, `clipman-edit`).
+- `src/explorer.rs`: Explorer entries in HKCU (`…\SystemFileAssociations\<ext>\shell\clipman`,
+  a `SubCommands` cascade with numbered subkeys because Explorer sorts them by name). Only
+  that `clipman` key is ever written or deleted.
 - `src/ui/`: eframe app. `mod.rs` (screens + CLI render window), `browser.rs`, `editor.rs`,
   `settings.rs` (modal dialog), `timeline.rs` (custom range widget).
 - `packaging/arch/PKGBUILD`: `clipman-video-git` (VCS package; the name avoids the AUR's
@@ -111,6 +116,15 @@ Notes for coding agents working on clipman. Read README.md first for what it doe
 - Windows compile check from Linux: `cargo check --target x86_64-pc-windows-gnu --no-default-features`
   (the `download` feature's TLS crate needs MinGW headers to cross-compile; native Windows
   builds are fine).
+- Running the Windows build under Wine: there's no MinGW toolchain installed, but zig can link.
+  Use a linker shim that runs `zig cc -target x86_64-windows-gnu`, drops `-lmsvcrt`,
+  `-lmingwex`, `-lmingw32`, `-lgcc`, `-l:libpthread.a`, `-nodefaultlibs`, `-Wl,-B*`,
+  replaces `-lgcc_eh` with `-lunwind` and `-lwindows.0.52.0` with the `.a` path in the
+  `windows_x86_64_gnu` crate. Also put an `x86_64-w64-mingw32-dlltool` on PATH that calls
+  `llvm-dlltool` without `-f`, `--temp-prefix`, `--no-leading-underscore` or `--64`. Set
+  `CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER` / `CC_x86_64_pc_windows_gnu` to the shim, then
+  `cargo build --target x86_64-pc-windows-gnu --no-default-features`. Use a scratch
+  `WINEPREFIX`; `wine reg export` (UTF-16) shows non-ASCII values correctly, `reg query` doesn't.
 
 ## Environment
 

@@ -66,7 +66,7 @@ echo "installed $APPS/clipman.desktop"
 
 # 3. Thunar right-click entries (other custom actions are kept; uca.xml is backed up)
 if command -v thunar >/dev/null; then
-    echo "updated $("$EXE" --write-thunar) (restart Thunar to see the menu: thunar -q)"
+    echo "updated $("$EXE" --write-menu) (restart Thunar to see the menu: thunar -q)"
 fi
 
 # 4. Hyprland window rule (opt-in)

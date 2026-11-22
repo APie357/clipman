@@ -76,6 +76,18 @@ fn is_ours(action: &str) -> bool {
 /// Replace our entries in uca.xml with ones generated from the presets. Other custom
 /// actions are kept; the previous file is saved as uca.xml.bak.
 pub fn write_actions(s: &Settings, exe: &Path) -> Result<PathBuf> {
+    replace_ours(&actions_xml(s, exe))
+}
+
+/// Remove our entries from uca.xml (if it exists), keeping everything else.
+pub fn remove_actions() -> Result<PathBuf> {
+    if !uca_path().exists() {
+        return Ok(uca_path());
+    }
+    replace_ours("")
+}
+
+fn replace_ours(actions: &str) -> Result<PathBuf> {
     let uca = uca_path();
     let xml = match std::fs::read_to_string(&uca) {
         Ok(x) => {
@@ -105,7 +117,11 @@ pub fn write_actions(s: &Settings, exe: &Path) -> Result<PathBuf> {
         }
     }
     kept.push_str(rest);
-    let new = format!("{}{}\n{}", kept, actions_xml(s, exe), &xml[end..]);
+    let new = if actions.is_empty() {
+        format!("{kept}{}", &xml[end..])
+    } else {
+        format!("{kept}{actions}\n{}", &xml[end..])
+    };
     std::fs::create_dir_all(uca.parent().unwrap())?;
     let tmp = uca.with_extension("xml.tmp");
     std::fs::write(&tmp, new)?;

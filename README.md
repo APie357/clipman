@@ -31,7 +31,8 @@ Render options (any of them switches to rendering):
 
 When started from a terminal, renders show progress there. When started from a file
 manager, they open a small progress window that closes itself when done. Other commands:
-`--write-thunar` (regenerate the Thunar menu) and `--fetch-model` (download the noise
+`--write-menu` (regenerate the right-click menu: Thunar on Linux, Explorer on Windows),
+`--remove-menu` (remove clipman's entries from it) and `--fetch-model` (download the noise
 suppression model).
 
 ## Clip browser
@@ -119,7 +120,7 @@ credentials:
 
 ```sh
 cd packaging/arch && MAKEPKG_GIT_CONFIG=~/.gitconfig makepkg -si
-clipman --write-thunar        # per user, if you want the Thunar right-click entries
+clipman --write-menu          # per user, if you want the Thunar right-click entries
 ```
 
 The package puts the Hyprland rule and the GSR config in `/usr/share/clipman/`.
@@ -129,8 +130,11 @@ The package puts the Hyprland rule and the GSR config in `/usr/share/clipman/`.
 first run). ffmpeg isn't bundled: the AppImage uses the system's, or downloads one on first run.
 
 **Windows:** `cargo build --release` gives `target\release\clipman.exe`. It runs without a
-console window and still prints to the terminal when started from one. Thunar integration
-is Linux-only; an Explorer context menu isn't implemented yet.
+console window and still prints to the terminal when started from one. Put it wherever you
+like and run `clipman --write-menu` (or *Regenerate right-click menu* in Settings) to get a
+*Clipman* submenu on `.mp4`, `.mkv` and `.mov` files in Explorer (per user, no admin rights;
+on Windows 11 it's under *Show more options*). Run it again after moving the exe, and
+`clipman --remove-menu` before deleting it. Explorer starts one clipman per selected file.
 
 **CI:** `.github/workflows/build.yml` tests and builds on every push to `main` and on pull
 requests: a Linux binary and AppImage (built on Ubuntu 22.04 so they run on older distros too)
