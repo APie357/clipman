@@ -280,6 +280,11 @@ impl SettingsUi {
             .find(|c| c.0 == self.draft.encoder)
             .unwrap();
         ui.weak(*hint);
+        ui.checkbox(&mut self.draft.gpu_playback, "Decode playback on the GPU")
+            .on_hover_text(
+                "Uses about half the CPU while a clip plays, but playback takes ~80 ms longer \
+                 to start. Seeking and scrubbing stay on the CPU, which is faster for them.",
+            );
         ui.add_space(8.0);
 
         // updates

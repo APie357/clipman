@@ -45,7 +45,12 @@ Notes for coding agents working on clipman. Read README.md first for what it doe
   and never shows the strip. Exact seeks decode a window of frames (3 before, 9 after) and
   keep it, so nearby steps are instant. Seek times are formatted with 6 decimals: millisecond
   rounding (0.0167 → 0.017) skipped past frames. Audio is the same `AudioPlan` decoded to f32 PCM and played through
-  rodio. Includes an ignored real-clip test (see Testing).
+  rodio. Includes an ignored real-clip test (see Testing). The `gpu_playback` setting adds
+  `-hwaccel auto` to playback only (falls back to software by itself). Measured on the RX 7900
+  with 1440p60: its decoder does ~700 fps vs ~1000 fps for software on all cores, and each GPU
+  ffmpeg costs ~70 ms of setup, so seeks and the strip are slower on the GPU (the strip and a
+  seek also contend for the one decoder); playback halves CPU use but starts ~80 ms later.
+  AMD has no JPEG encoder, so the strip can't stay on the GPU.
 - `src/update.rs`: update checker (`update-check` cargo feature, default on; the PKGBUILD
   builds without it). GUI windows only, never CLI renders: one GitHub `releases/latest`
   request a day, cached with the dismissed version in `<cache>/update-check.json`. The UI
@@ -108,7 +113,8 @@ Notes for coding agents working on clipman. Read README.md first for what it doe
 - `cargo test`: unit tests (settings parsing, naming, audio graphs,
   Thunar XML, time parsing).
 - Real playback / scrubbing: `CLIPMAN_TEST_CLIP=/path/clip.mp4 cargo test --release -- --ignored --nocapture`
-  (`plays_real_clip`: ~60 fps and a correct clock, and it plays a little audio;
+  (`plays_real_clip`: ~60 fps and a correct clock, and it plays a little audio; add
+  `CLIPMAN_TEST_GPU=1` to play with GPU decoding;
   `scrubbing_is_fast`: preview frames instant while dragging, exact frame ~160 ms after resting).
 - Renders: copy a clip into a scratch dir and run e.g. `clipman clip.mp4 --preset secondary --start 20 --end 35 --audio 1,2 --denoise 2`
   with `XDG_CONFIG_HOME` / `XDG_CACHE_HOME` pointed at scratch dirs so the user's settings and

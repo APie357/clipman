@@ -77,6 +77,10 @@ Stored as JSON in `~/.config/clipman/settings.json` (Windows: `%APPDATA%\clipman
 - **Noise suppression strength** 0–100% (blends the original back in; 0% = off).
 - **Video encoder**: *Auto*, *GPU* or *CPU (x264)*, with the GPU encoder that was found
   (see *Preset* above).
+- **Decode playback on the GPU** (off by default): the editor's playback uses about half the
+  CPU, but takes ~80 ms longer to start. Seeking and scrubbing always decode on the CPU: on a
+  many-core CPU that's faster than the GPU's video decoder, and it avoids the GPU's setup cost
+  on every seek.
 - **Check for updates**: once a day, asks GitHub for the latest release and shows a link in
   the clip browser when there's a newer one (✖ hides that version). Nothing is downloaded or
   installed. The Arch package is built without it, since pacman does its updates.

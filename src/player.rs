@@ -65,6 +65,8 @@ pub struct Player {
     /// Exactly decoded frames around the last exact seek: (timestamp, frame).
     window: Arc<Mutex<Vec<(f64, Frame)>>>,
     alive: Arc<AtomicBool>,
+    /// Decode playback on the GPU (Settings; read when playback starts).
+    gpu_playback: Arc<AtomicBool>,
     ctx: eframe::egui::Context,
     /// Some((wall-clock start, media time at start)) while playing.
     clock: Option<(Instant, f64)>,
@@ -85,6 +87,7 @@ impl Player {
         let alive = Arc::new(AtomicBool::new(true));
         let step = (1.0 / SCRUB_FPS).max(duration / SCRUB_MAX_FRAMES);
         let window = Arc::new(Mutex::new(Vec::new()));
+        let gpu_playback = Arc::new(AtomicBool::new(false));
         let strip = Arc::new(Mutex::new(ScrubStrip {
             step,
             frames: Vec::new(),
@@ -92,10 +95,10 @@ impl Player {
         let (video_tx, rx) = mpsc::channel();
         {
             let (f, s, g, c) = (frame.clone(), src.clone(), generation.clone(), ctx.clone());
-            let w = window.clone();
+            let (w, gpu) = (window.clone(), gpu_playback.clone());
             let frame_dur = if fps > 1.0 { 1.0 / fps } else { 1.0 / 60.0 };
             std::thread::spawn(move || {
-                video_thread(s, duration, frame_dur, preview_width, rx, f, w, g, c)
+                video_thread(s, duration, frame_dur, preview_width, gpu, rx, f, w, g, c)
             });
             let (s, st, a) = (src.clone(), strip.clone(), alive.clone());
             std::thread::spawn(move || strip_thread(s, step, st, a));
@@ -109,6 +112,7 @@ impl Player {
             strip,
             window,
             alive,
+            gpu_playback,
             ctx,
             clock: None,
             paused_at: 0.0,
@@ -117,6 +121,13 @@ impl Player {
         let g = p.next_generation();
         p.video_tx.send(VideoCmd::Seek(0.0, g)).ok();
         p
+    }
+
+    /// Decode playback with the GPU (`-hwaccel auto`) from the next play on. Seeks and
+    /// the scrub strip stay on the CPU: on a many-core CPU that's faster, and the GPU's
+    /// one-off setup (~70 ms per ffmpeg) would slow every seek down.
+    pub fn set_gpu_playback(&self, on: bool) {
+        self.gpu_playback.store(on, Ordering::Relaxed);
     }
 
     pub fn position(&self) -> f64 {
@@ -302,8 +313,18 @@ fn strip_thread(src: PathBuf, step: f64, strip: Arc<Mutex<ScrubStrip>>, alive: A
     kill(child);
 }
 
-fn video_cmd(src: &PathBuf, t: f64, width: u32) -> ffmpeg_sidecar::command::FfmpegCommand {
+fn video_cmd(
+    src: &PathBuf,
+    t: f64,
+    width: u32,
+    gpu: bool,
+) -> ffmpeg_sidecar::command::FfmpegCommand {
     let mut cmd = render::ffmpeg();
+    if gpu {
+        // the first hardware decoder that works, else software (e.g. 4:4:4 clips);
+        // frames come back to system memory, so the CPU scale below still applies
+        cmd.args(["-hwaccel", "auto"]);
+    }
     cmd.seek(format!("{t:.6}")).input(src).map("0:v:0");
     cmd.args(["-vf", &format!("scale={width}:-2:flags=bilinear")]);
     cmd
@@ -320,6 +341,7 @@ fn video_thread(
     duration: f64,
     frame_dur: f64,
     width: u32,
+    gpu_playback: Arc<AtomicBool>,
     rx: Receiver<VideoCmd>,
     out: Arc<Mutex<Option<Frame>>>,
     window: Arc<Mutex<Vec<(f64, Frame)>>>,
@@ -381,7 +403,7 @@ fn video_thread(
                     // next frame steps nearby don't need ffmpeg at all
                     let from = (at - WINDOW_BEFORE as f64 * frame_dur).max(0.0);
                     let count = (WINDOW_BEFORE + 1 + WINDOW_AFTER) as u32;
-                    let Ok(mut child) = video_cmd(&src, from, width)
+                    let Ok(mut child) = video_cmd(&src, from, width, false)
                         .frames(count)
                         .rawvideo()
                         .spawn()
@@ -433,7 +455,8 @@ fn video_thread(
                 }
             }
             VideoCmd::Play(t, clock, g) => {
-                let Ok(mut child) = video_cmd(&src, t, width).rawvideo().spawn() else {
+                let gpu = gpu_playback.load(Ordering::Relaxed);
+                let Ok(mut child) = video_cmd(&src, t, width, gpu).rawvideo().spawn() else {
                     continue;
                 };
                 let Ok(iter) = child.iter() else { continue };
@@ -747,6 +770,8 @@ mod tests {
         let info = crate::media::probe(&clip).unwrap();
         let ctx = eframe::egui::Context::default();
         let mut p = Player::new(clip, info.duration, info.fps, 960, ctx);
+        // CLIPMAN_TEST_GPU=1: decode playback on the GPU (the Settings toggle)
+        p.set_gpu_playback(std::env::var_os("CLIPMAN_TEST_GPU").is_some());
         let first = (0..100).find_map(|_| {
             std::thread::sleep(Duration::from_millis(20));
             p.take_frame()

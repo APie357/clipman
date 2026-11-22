@@ -103,6 +103,7 @@ impl Editor {
 
     /// (Re)build the track list and preset choice after settings changed.
     pub fn apply_settings(&mut self, settings: &Settings) {
+        self.player.set_gpu_playback(settings.gpu_playback);
         self.tracks = self
             .info
             .audio_names
