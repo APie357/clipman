@@ -78,7 +78,11 @@ Notes for coding agents working on clipman. Read README.md first for what it doe
   run with `APPIMAGE_EXTRACT_AND_RUN=1` so no FUSE is needed). ffmpeg isn't bundled.
 - `.github/workflows/build.yml`: Linux (ubuntu-22.04 for an old glibc baseline: tests, the
   AppImage and a tarball) and Windows (tests, a zipped exe) on push/PR; `v*` tags also publish
-  a release. The repo is public, so Actions minutes are free. Workflows from forks' pull
+  a release. A `check` job makes a branch push skip its build when a `v*` tag points at the
+  same commit (the tag run builds and releases it), so release with
+  `git push --atomic origin main vX.Y.Z` (both refs at once, so the tag exists when the check
+  runs). Bump `version` in Cargo.toml first, or the update checker offers the release to
+  itself. The repo is public, so Actions minutes are free. Workflows from forks' pull
   requests get a read-only token; only the tag-triggered release job can write.
 - `scripts/install.sh`: Linux installer. `--hyprland` / `--gsr` are opt-in. `extras/` holds
   the Hyprland rule, the desktop entry and the GSR config snapshot (`@HOME@` placeholders).

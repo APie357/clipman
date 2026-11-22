@@ -2,6 +2,11 @@
 # Builds and tests clipman for Linux (binary + AppImage) and Windows on every push to
 # main and on pull requests. Pushing a tag like v0.2.0 also publishes a GitHub release
 # with those files attached.
+#
+# Pushing a commit to main together with its release tag starts two runs for the same
+# commit. The branch run skips the build when a v* tag already points at its commit,
+# since the tag run builds it and publishes the release. Push both refs in one go
+# (`git push --atomic origin main v0.2.0`) so the tag exists by the time the check runs.
 name: Build
 
 on:
@@ -18,7 +23,27 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # skip branch builds of a commit that has a release tag (its tag run does the work)
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      tagged: ${{ steps.tag.outputs.tagged }}
+    steps:
+      - id: tag
+        if: github.event_name == 'push' && github.ref_type == 'branch'
+        env:
+          REPO_URL: ${{ github.server_url }}/${{ github.repository }}.git
+          SHA: ${{ github.sha }}
+        run: |
+          # annotated tags list the commit on their "^{}" line, lightweight ones directly
+          if git ls-remote --tags "$REPO_URL" 'v*' | grep -qE "^${SHA}[[:space:]]+refs/tags/v"; then
+            echo "A release tag points at ${SHA}: its tag run builds it, skipping this one."
+            echo "tagged=true" >> "$GITHUB_OUTPUT"
+          fi
+
   linux:
+    needs: check
+    if: needs.check.outputs.tagged != 'true'
     # the oldest supported Ubuntu: an AppImage needs a glibc at least as new as the
     # machine it was built on, so building on an older one makes it run on more distros
     runs-on: ubuntu-22.04
@@ -47,6 +72,8 @@ jobs:
           if-no-files-found: error
 
   windows:
+    needs: check
+    if: needs.check.outputs.tagged != 'true'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
