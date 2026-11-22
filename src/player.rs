@@ -18,9 +18,10 @@ use crate::render::{self, AudioPlan};
 const SAMPLE_RATE: u32 = 48_000;
 /// Scrub preview strip: small frames decoded in the background so dragging the playhead
 /// shows something instantly; the exact frame follows once the playhead rests.
-const SCRUB_WIDTH: u32 = 256;
+/// 480p, kept as JPEG in memory (~50 KB a frame) and decoded only when shown.
+const SCRUB_WIDTH: u32 = 854;
 const SCRUB_FPS: f64 = 10.0;
-const SCRUB_MAX_FRAMES: f64 = 600.0; // ~66 MB at 256x144, whatever the clip length
+const SCRUB_MAX_FRAMES: f64 = 600.0; // ~30-40 MB of JPEG, whatever the clip length
 /// Wait this long for the playhead to settle before decoding the exact frame.
 const SEEK_SETTLE: Duration = Duration::from_millis(40);
 
@@ -45,7 +46,8 @@ enum VideoCmd {
 /// Low-res frames every `step` seconds, filled in by a background decode.
 struct ScrubStrip {
     step: f64,
-    frames: Vec<Frame>,
+    /// JPEG-encoded frames, one every `step` seconds.
+    frames: Vec<Vec<u8>>,
 }
 
 pub struct Player {
@@ -81,7 +83,7 @@ impl Player {
         let (video_tx, rx) = mpsc::channel();
         {
             let (f, s, g, c) = (frame.clone(), src.clone(), generation.clone(), ctx.clone());
-            std::thread::spawn(move || video_thread(s, preview_width, rx, f, g, c));
+            std::thread::spawn(move || video_thread(s, duration, preview_width, rx, f, g, c));
             let (s, st, a) = (src.clone(), strip.clone(), alive.clone());
             std::thread::spawn(move || strip_thread(s, step, st, a));
         }
@@ -163,17 +165,29 @@ impl Player {
 
     /// Show the nearest scrub-strip frame right away (the exact frame replaces it).
     fn show_strip_frame(&self, t: f64) {
-        let Ok(strip) = self.strip.lock() else { return };
-        let i = (t / strip.step).round() as usize;
-        if let Some(f) = strip
-            .frames
-            .get(i.min(strip.frames.len().saturating_sub(1)))
-        {
-            if let Ok(mut slot) = self.frame.lock() {
-                *slot = Some(f.clone());
+        let jpeg = {
+            let Ok(strip) = self.strip.lock() else { return };
+            let i = (t / strip.step).round() as usize;
+            match strip
+                .frames
+                .get(i.min(strip.frames.len().saturating_sub(1)))
+            {
+                Some(j) => j.clone(),
+                None => return,
             }
-            self.ctx.request_repaint();
+        };
+        let Ok(img) = image::load_from_memory_with_format(&jpeg, image::ImageFormat::Jpeg) else {
+            return;
+        };
+        let img = img.to_rgb8();
+        if let Ok(mut slot) = self.frame.lock() {
+            *slot = Some(Frame {
+                width: img.width() as usize,
+                height: img.height() as usize,
+                rgb: img.into_raw(),
+            });
         }
+        self.ctx.request_repaint();
     }
 
     /// The newest decoded frame, if it changed since the last call.
@@ -196,31 +210,49 @@ impl Drop for Player {
     }
 }
 
-/// Decode the scrub strip: a frame every `step` seconds, SCRUB_WIDTH wide.
+/// Decode the scrub strip: a frame every `step` seconds, SCRUB_WIDTH wide, encoded to
+/// JPEG by ffmpeg (an MJPEG stream on stdout, split into frames at the end-of-image marker).
 fn strip_thread(src: PathBuf, step: f64, strip: Arc<Mutex<ScrubStrip>>, alive: Arc<AtomicBool>) {
     let mut cmd = render::ffmpeg();
     cmd.input(&src).map("0:v:0");
     cmd.args([
         "-vf",
-        &format!("fps=1/{step:.4},scale={SCRUB_WIDTH}:-2:flags=fast_bilinear"),
+        &format!("fps=1/{step:.4},scale={SCRUB_WIDTH}:-2:flags=bicubic"),
     ]);
-    let Ok(mut child) = cmd.rawvideo().spawn() else {
+    cmd.args(["-c:v", "mjpeg", "-q:v", "4", "-f", "image2pipe"])
+        .pipe_stdout();
+    let Ok(mut child) = cmd.spawn() else { return };
+    let Some(mut stdout) = child.take_stdout() else {
         return;
     };
-    let Ok(iter) = child.iter() else { return };
-    for ev in iter {
-        if !alive.load(Ordering::Relaxed) {
-            break;
+    if let Some(mut err) = child.take_stderr() {
+        std::thread::spawn(move || std::io::copy(&mut err, &mut std::io::sink()));
+    }
+    let mut buf = Vec::new();
+    let mut chunk = vec![0u8; 64 * 1024];
+    while alive.load(Ordering::Relaxed) {
+        let n = match stdout.read(&mut chunk) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => n,
+        };
+        let scan_from = buf.len().saturating_sub(1);
+        buf.extend_from_slice(&chunk[..n]);
+        // FF D9 = end of image; it can't occur inside JPEG data (FF bytes are stuffed)
+        let mut start = 0;
+        let mut i = scan_from;
+        while i + 1 < buf.len() {
+            if buf[i] == 0xFF && buf[i + 1] == 0xD9 {
+                let frame = buf[start..i + 2].to_vec();
+                if let Ok(mut s) = strip.lock() {
+                    s.frames.push(frame);
+                }
+                start = i + 2;
+                i += 2;
+            } else {
+                i += 1;
+            }
         }
-        if let FfmpegEvent::OutputFrame(f) = ev
-            && let Ok(mut s) = strip.lock()
-        {
-            s.frames.push(Frame {
-                width: f.width as usize,
-                height: f.height as usize,
-                rgb: f.data,
-            });
-        }
+        buf.drain(..start);
     }
     kill(child);
 }
@@ -239,6 +271,7 @@ fn kill(mut child: FfmpegChild) {
 
 fn video_thread(
     src: PathBuf,
+    duration: f64,
     width: u32,
     rx: Receiver<VideoCmd>,
     out: Arc<Mutex<Option<Frame>>>,
@@ -283,22 +316,34 @@ fn video_thread(
                     Err(RecvTimeoutError::Disconnected) => return,
                     Err(RecvTimeoutError::Timeout) => {}
                 }
-                let Ok(mut child) = video_cmd(&src, t, width).frames(1).rawvideo().spawn() else {
-                    continue;
-                };
-                let Ok(iter) = child.iter() else { continue };
-                for ev in iter {
-                    // a newer request cancels this decode
-                    if let Ok(c) = rx.try_recv() {
-                        pending = Some(c);
+                // There's no frame at exactly `duration`, so seeking to the end used to
+                // decode nothing; stay a little before it and step back if still empty.
+                let mut at = t.min(duration - 0.05).max(0.0);
+                for _attempt in 0..3 {
+                    let Ok(mut child) = video_cmd(&src, at, width).frames(1).rawvideo().spawn()
+                    else {
+                        break;
+                    };
+                    let Ok(iter) = child.iter() else { break };
+                    let mut got = false;
+                    for ev in iter {
+                        // a newer request cancels this decode
+                        if let Ok(c) = rx.try_recv() {
+                            pending = Some(c);
+                            break;
+                        }
+                        if let FfmpegEvent::OutputFrame(f) = ev {
+                            publish(f, g);
+                            got = true;
+                            break;
+                        }
+                    }
+                    kill(child);
+                    if got || pending.is_some() || at <= 0.0 {
                         break;
                     }
-                    if let FfmpegEvent::OutputFrame(f) = ev {
-                        publish(f, g);
-                        break;
-                    }
+                    at = (at - 0.5).max(0.0);
                 }
-                kill(child);
             }
             VideoCmd::Play(t, clock, g) => {
                 let Ok(mut child) = video_cmd(&src, t, width).rawvideo().spawn() else {
@@ -499,7 +544,7 @@ mod tests {
             p.seek(10.0 + k as f64 * 0.5, None);
             let (lat, w) = wait_frame(&p, 100).expect("no preview during drag");
             assert!(
-                lat < Duration::from_millis(5) && w == SCRUB_WIDTH as usize,
+                lat < Duration::from_millis(25) && w == SCRUB_WIDTH as usize,
                 "drag frame {lat:?} {w}"
             );
             std::thread::sleep(Duration::from_millis(16));
@@ -507,6 +552,17 @@ mod tests {
         let (lat, w) = wait_frame(&p, 2000).expect("exact frame after drag");
         eprintln!("drag: preview frames instant; exact {w}px frame {lat:?} after the last move");
         assert_eq!(w, 1280);
+        // the very end: there's no frame at exactly `duration`; must still get a sharp one
+        p.seek(info.duration, None);
+        let mut sizes = vec![];
+        while let Some((_, w)) = wait_frame(&p, 2000) {
+            sizes.push(w);
+            if w == 1280 {
+                break;
+            }
+        }
+        eprintln!("seek to end: frames shown {sizes:?}");
+        assert_eq!(sizes.last(), Some(&1280), "end frame stayed low-res");
     }
 
     /// Plays a real clip for 2 s: `CLIPMAN_TEST_CLIP=clip.mp4 cargo test -- --ignored`

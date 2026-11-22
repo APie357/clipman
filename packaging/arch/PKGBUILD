@@ -10,7 +10,7 @@
 
 pkgname=clipman-video-git
 _name=clipman
-pkgver=r4.6d93072
+pkgver=r7.646fbc2
 pkgrel=1
 pkgdesc="Native clip browser, trimmer and compressor for game clips"
 arch=('x86_64' 'aarch64')

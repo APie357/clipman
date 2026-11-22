@@ -26,8 +26,8 @@ Notes for coding agents working on clipman. Read README.md first for what it doe
   retries, CRF 20 when there's no limit, lossless keyframe-aligned trims, the `AudioPlan`
   mix / noise suppression graph, and the RNNoise model download (pinned URL + SHA-256).
 - `src/player.rs`: preview. A video thread decodes rgb24 frames (`-vf scale=…`), paced against
-  a shared wall clock. Scrubbing: a background "scrub strip" (256 px, 10 fps, max 600 frames)
-  is shown instantly on seek. The exact frame is decoded only after the playhead rests
+  a shared wall clock. Scrubbing: a background "scrub strip" (854 px, 10 fps, max 600 frames,
+  stored as JPEG from ffmpeg's MJPEG output) is shown instantly on seek. The exact frame is decoded only after the playhead rests
   (`SEEK_SETTLE`), and a newer command cancels the decode. Every command carries a generation
   number so stale frames are never published. Audio is the same `AudioPlan` decoded to f32 PCM and played through
   rodio. Includes an ignored real-clip test (see Testing).
@@ -64,6 +64,8 @@ Notes for coding agents working on clipman. Read README.md first for what it doe
   (checking `input.modifiers` at frame time misses quick Ctrl+S presses), counts key-repeats,
   and consumes the key so a focused button doesn't also react (Space would toggle twice).
   egui's matching ignores Shift unless asked for, so check `SHIFT+key` **before** the plain key.
+- There's no frame at exactly `duration`: an exact seek there decodes nothing. The seek decode
+  clamps to `duration - 0.05` and steps back if a decode comes out empty.
 - egui's default fonts lack arrows (→ ←); they render as boxes. ✔ ✖ · – … are fine.
 - In `egui::Grid`, `TextEdit::desired_width` is ignored; use `ui.add_sized`.
 - The editor sizes its window so the video area matches the clip's aspect (`fit_window`,

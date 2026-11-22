@@ -46,8 +46,8 @@ also returns to the browser after saving.
   to seek.
 - **Space** plays/pauses (within the selected range). **←/→** step one frame, **Shift+←/→**
   one second. **I** / **O** set the start / end at the playhead. **Ctrl+S** saves.
-- Scrubbing is instant: when a clip opens, a small 10 fps preview strip is decoded in the
-  background (a few seconds; capped at ~66 MB of memory). While you drag, the nearest strip
+- Scrubbing is instant: when a clip opens, a 480p, 10 fps preview strip is decoded in the
+  background (a few seconds; kept as JPEG, ~30-40 MB of memory at most). While you drag, the nearest strip
   frame shows immediately, and the sharp frame follows once the playhead rests.
 - **Audio** dropdown: tick the tracks to keep; they're mixed into one at their original
   volume. Speech tracks have a *Noise suppression* toggle (RNNoise). The preview plays the
