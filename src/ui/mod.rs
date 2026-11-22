@@ -20,6 +20,17 @@ use settings::{Outcome, SettingsUi};
 
 pub const APP_ID: &str = "clipman";
 
+/// Height of every button, dropdown and text field, so controls line up.
+pub const CONTROL_HEIGHT: f32 = 26.0;
+
+fn apply_style(ctx: &egui::Context) {
+    ctx.all_styles_mut(|style| {
+        style.spacing.interact_size.y = CONTROL_HEIGHT;
+        style.spacing.button_padding = Vec2::new(10.0, 4.0);
+        style.spacing.item_spacing.x = 6.0;
+    });
+}
+
 pub enum Start {
     Browser,
     Editor(PathBuf),
@@ -82,6 +93,7 @@ pub fn run(start: Start) -> eframe::Result<()> {
 
 impl App {
     fn new(start: Start, ctx: &egui::Context) -> Self {
+        apply_style(ctx);
         let settings = Settings::load();
         let mut app = Self {
             settings,

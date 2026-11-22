@@ -215,8 +215,10 @@ impl SettingsUi {
         ui.horizontal(|ui| {
             ui.label("File name prefix:");
             ui.add_sized(
-                [140.0, 20.0],
-                egui::TextEdit::singleline(&mut self.draft.output_prefix).hint_text("none"),
+                [140.0, super::CONTROL_HEIGHT],
+                egui::TextEdit::singleline(&mut self.draft.output_prefix)
+                    .vertical_align(egui::Align::Center)
+                    .hint_text("none"),
             );
             ui.weak(format!(
                 "Files are named {}<clip name><suffix>.mp4",
@@ -248,8 +250,10 @@ impl SettingsUi {
                 {
                     let hint = p.label();
                     ui.add_sized(
-                        [230.0, 20.0],
-                        egui::TextEdit::singleline(&mut p.name).hint_text(hint),
+                        [230.0, super::CONTROL_HEIGHT],
+                        egui::TextEdit::singleline(&mut p.name)
+                            .vertical_align(egui::Align::Center)
+                            .hint_text(hint),
                     );
                     if p.is_original() {
                         for _ in 0..3 {
@@ -263,8 +267,10 @@ impl SettingsUi {
                         );
                         ui.add(egui::DragValue::new(&mut p.fps).range(1..=240));
                         ui.add_sized(
-                            [90.0, 20.0],
-                            egui::TextEdit::singleline(&mut row.max_mb).hint_text("no limit"),
+                            [90.0, super::CONTROL_HEIGHT],
+                            egui::TextEdit::singleline(&mut row.max_mb)
+                                .vertical_align(egui::Align::Center)
+                                .hint_text("no limit"),
                         );
                         if row.auto_suffix {
                             p.suffix = format!("_{}", p.resolution());
@@ -272,8 +278,10 @@ impl SettingsUi {
                     }
                     if ui
                         .add_sized(
-                            [110.0, 20.0],
-                            egui::TextEdit::singleline(&mut p.suffix).hint_text("none"),
+                            [110.0, super::CONTROL_HEIGHT],
+                            egui::TextEdit::singleline(&mut p.suffix)
+                                .vertical_align(egui::Align::Center)
+                                .hint_text("none"),
                         )
                         .changed()
                     {
@@ -325,7 +333,7 @@ impl SettingsUi {
             ui.end_row();
             for (name, t) in self.draft.tracks.iter_mut() {
                 ui.label(name);
-                ui.add_sized([220.0, 20.0], egui::TextEdit::singleline(&mut t.label).hint_text(name.as_str()));
+                ui.add_sized([220.0, super::CONTROL_HEIGHT], egui::TextEdit::singleline(&mut t.label).vertical_align(egui::Align::Center).hint_text(name.as_str()));
                 ui.checkbox(&mut t.default, "").on_hover_text("Ticked by default in the Audio dropdown and when rendering from the right-click menu");
                 egui::ComboBox::from_id_salt(("dn", name.as_str()))
                     .selected_text(DENOISE_CHOICES.iter().find(|c| c.0 == t.denoise).unwrap().1)

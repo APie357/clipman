@@ -156,10 +156,11 @@ impl Browser {
                     if ui.button("Refresh").clicked() {
                         self.refresh();
                     }
-                    ui.add(
+                    ui.add_sized(
+                        [200.0, super::CONTROL_HEIGHT],
                         egui::TextEdit::singleline(&mut self.filter)
                             .hint_text("Filter")
-                            .desired_width(200.0),
+                            .vertical_align(egui::Align::Center),
                     );
                 });
             });

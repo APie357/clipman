@@ -404,15 +404,7 @@ impl Editor {
                     if self.from_browser && ui.button("Back to clips").clicked() {
                         action = Action::Back;
                     }
-                    let play = if self.player.is_playing() {
-                        "Pause"
-                    } else {
-                        "Play"
-                    };
-                    if ui
-                        .add_sized([70.0, 22.0], egui::Button::new(play))
-                        .clicked()
-                    {
+                    if play_button(ui, self.player.is_playing()).clicked() {
                         self.toggle(settings, mixer);
                     }
                     ui.monospace(format!(
@@ -591,4 +583,33 @@ impl Editor {
             self.player.restart_audio(m, &plan);
         }
     }
+}
+
+/// Square Play / Pause button with a drawn icon (egui's default font lacks the glyphs).
+fn play_button(ui: &mut egui::Ui, playing: bool) -> egui::Response {
+    let size = Vec2::splat(super::CONTROL_HEIGHT);
+    let resp = ui
+        .add(egui::Button::new("").min_size(Vec2::new(size.x + 8.0, size.y)))
+        .on_hover_text(if playing {
+            "Pause (Space)"
+        } else {
+            "Play (Space)"
+        });
+    let color = ui.style().interact(&resp).fg_stroke.color;
+    let c = resp.rect.center();
+    let p = ui.painter();
+    if playing {
+        for dx in [-3.5, 3.5] {
+            let bar = egui::Rect::from_center_size(c + Vec2::new(dx, 0.0), Vec2::new(4.0, 12.0));
+            p.rect_filled(bar, 1.0, color);
+        }
+    } else {
+        let pts = vec![
+            c + Vec2::new(-4.0, -6.5),
+            c + Vec2::new(6.5, 0.0),
+            c + Vec2::new(-4.0, 6.5),
+        ];
+        p.add(egui::Shape::convex_polygon(pts, color, egui::Stroke::NONE));
+    }
+    resp
 }
