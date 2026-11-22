@@ -10,6 +10,7 @@
 // No console window for the GUI on Windows (the CLI re-attaches to its parent's).
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod gpu;
 mod media;
 mod player;
 mod render;
@@ -59,6 +60,10 @@ struct Cli {
     /// Render with the defaults (same as giving any render option).
     #[arg(long)]
     render: bool,
+    /// Render: video encoder (auto: GPU only for presets without a size limit).
+    /// Default: the one chosen in Settings.
+    #[arg(long, value_enum)]
+    encoder: Option<settings::Encoder>,
     /// Render: show progress in the terminal even when not attached to one.
     #[arg(long)]
     no_window: bool,
@@ -83,6 +88,7 @@ impl Cli {
             || self.audio.is_some()
             || self.denoise.is_some()
             || self.out.is_some()
+            || self.encoder.is_some()
             || self.files.len() > 1
     }
 }
@@ -137,6 +143,7 @@ fn build_jobs(cli: &Cli, settings: &Settings) -> Result<Vec<render::Job>, String
             tracks: audio.clone().unwrap_or(d_tracks),
             denoise: denoise.clone().unwrap_or(d_denoise),
             strength: settings.denoise_strength,
+            encoder: cli.encoder.unwrap_or(settings.encoder),
         });
     }
     Ok(jobs)

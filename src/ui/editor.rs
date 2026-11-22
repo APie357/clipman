@@ -209,6 +209,7 @@ impl Editor {
             tracks: self.selected(),
             denoise: self.denoise(),
             strength: settings.denoise_strength,
+            encoder: settings.encoder,
         };
         let (tx, rx) = mpsc::channel();
         let cancel = Arc::new(AtomicBool::new(false));

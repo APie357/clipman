@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
-//! Rendering: size-targeted 2-pass x264, fixed-quality (CRF) encodes, lossless trims,
+//! Rendering: size-targeted 2-pass x264 (or one-pass hardware H.264, see `gpu`),
+//! fixed-quality encodes, lossless trims,
 //! audio track mixing and RNNoise noise suppression. Used by the editor (progress shown
 //! in its window) and by the command line / right-click menu.
 
@@ -10,8 +11,9 @@ use anyhow::{Context, Result, bail};
 use ffmpeg_sidecar::command::FfmpegCommand;
 use ffmpeg_sidecar::event::{FfmpegEvent, LogLevel};
 
+use crate::gpu;
 use crate::media::{self, parse_ffmpeg_time};
-use crate::settings::{Preset, cache_dir};
+use crate::settings::{Encoder, Preset, cache_dir};
 
 const TARGET_FRACTION: f64 = 0.97; // aim a bit under the limit; retry if over
 const MAX_ATTEMPTS: u32 = 3;
@@ -43,6 +45,7 @@ pub struct Job {
     pub denoise: Vec<usize>,
     /// Noise suppression strength in percent.
     pub strength: u8,
+    pub encoder: Encoder,
 }
 
 /// Progress reports: fraction 0..1 of the whole job and a short description.
@@ -403,40 +406,89 @@ fn render_compress(
     progress: Progress,
     cancel: &AtomicBool,
 ) -> Result<()> {
+    let hw = if job.encoder.uses_gpu(job.preset.limit_mb().is_some()) {
+        progress(0.0, "Looking for a GPU encoder…");
+        gpu::detect()
+    } else {
+        None
+    };
+    if let Some(hw) = hw {
+        match encode(job, info, start, end, plan, tmp, out, Some(hw), progress, cancel) {
+            Err(e) if !e.is::<Cancelled>() => {
+                // e.g. a driver problem or a source the GPU path can't take: x264 still works
+                eprintln!("clipman: GPU encode ({}) failed, using the CPU: {e:#}", hw.codec());
+            }
+            r => return r,
+        }
+    }
+    encode(job, info, start, end, plan, tmp, out, None, progress, cancel)
+}
+
+/// One compress attempt with x264 (`hw` None) or a hardware encoder.
+#[allow(clippy::too_many_arguments)]
+fn encode(
+    job: &Job,
+    info: &media::ClipInfo,
+    start: f64,
+    end: f64,
+    plan: &AudioPlan,
+    tmp: &Path,
+    out: &Path,
+    hw: Option<&gpu::HwEncoder>,
+    progress: Progress,
+    cancel: &AtomicBool,
+) -> Result<()> {
     let p = &job.preset;
     let duration = end - start;
     let trimmed = start > 0.0 || end < info.duration;
-    let vf = format!("scale=-2:'min({},ih)':flags=lanczos", p.height); // never upscale
+    let mut vf = format!("scale=-2:'min({},ih)':flags=lanczos", p.height); // never upscale
+    if let Some(hw) = hw {
+        vf += hw.filter_suffix();
+    }
+    let on = if hw.is_some() { " on GPU" } else { "" };
+    // input, scaling and frame rate (codec / rate control are added per mode)
     let base = |cmd: &mut FfmpegCommand| {
+        if let Some(hw) = hw {
+            hw.input_args(cmd);
+        }
         if trimmed {
             trim(cmd, start, duration);
         }
         cmd.input(&job.src).map("0:v:0").args(["-vf", vf.as_str()]);
-        cmd.args(["-fpsmax", &p.fps.to_string()])
-            .codec_video("libx264")
-            .preset("slow")
-            .pix_fmt("yuv420p");
+        cmd.args(["-fpsmax", &p.fps.to_string()]);
+    };
+    let x264 = |cmd: &mut FfmpegCommand| {
+        cmd.codec_video("libx264").preset("slow").pix_fmt("yuv420p");
+    };
+    let finish = |cmd: &mut FfmpegCommand, audio_kbps: u32| {
+        plan.apply(cmd);
+        if *plan != AudioPlan::None {
+            cmd.codec_audio("aac")
+                .args(["-b:a", &format!("{audio_kbps}k")]);
+        }
+        cmd.args(["-movflags", "+faststart"])
+            .overwrite()
+            .output(out);
     };
 
     let Some(limit_mb) = p.limit_mb() else {
         // no size limit: one pass at a fixed quality
         let mut cmd = ffmpeg();
         base(&mut cmd);
-        cmd.crf(NO_LIMIT_CRF);
-        plan.apply(&mut cmd);
-        if *plan != AudioPlan::None {
-            cmd.codec_audio("aac")
-                .args(["-b:a", &format!("{NO_LIMIT_AUDIO_KBPS}k")]);
+        match hw {
+            Some(hw) => hw.quality_args(&mut cmd),
+            None => {
+                x264(&mut cmd);
+                cmd.crf(NO_LIMIT_CRF);
+            }
         }
-        cmd.args(["-movflags", "+faststart"])
-            .overwrite()
-            .output(out);
+        finish(&mut cmd, NO_LIMIT_AUDIO_KBPS);
         return run(
             &mut cmd,
             duration,
             0.0,
             1.0,
-            "Encoding (no size limit)",
+            &format!("Encoding{on} (no size limit)"),
             progress,
             cancel,
         );
@@ -460,64 +512,75 @@ fn render_compress(
                 crate::settings::fmt_num(limit_mb)
             );
         }
-        let rate = |cmd: &mut FfmpegCommand| {
-            cmd.args([
-                "-b:v",
-                &format!("{v_kbps}k"),
-                "-maxrate",
-                &format!("{}k", v_kbps * 3 / 2),
-            ]);
-            cmd.args(["-bufsize", &format!("{}k", v_kbps * 2)]);
-            cmd.args(["-passlogfile"]).arg(&passlog);
-        };
         let retry = if attempt == 1 {
             String::new()
         } else {
             format!(" (retry {})", attempt - 1)
         };
 
-        let mut pass1 = ffmpeg();
-        base(&mut pass1);
-        rate(&mut pass1);
-        pass1
-            .args(["-pass", "1"])
-            .no_audio()
-            .format("null")
-            .overwrite()
-            .output(null_output());
-        run(
-            &mut pass1,
-            duration,
-            0.0,
-            0.45,
-            &format!("Pass 1/2: analyzing{retry}"),
-            progress,
-            cancel,
-        )?;
+        if let Some(hw) = hw {
+            // hardware encoders have no 2-pass mode: one pass at the average bitrate,
+            // and the size check below retries if it overshoots
+            let mut cmd = ffmpeg();
+            base(&mut cmd);
+            hw.bitrate_args(&mut cmd, v_kbps);
+            finish(&mut cmd, audio_kbps);
+            run(
+                &mut cmd,
+                duration,
+                0.0,
+                1.0,
+                &format!("Encoding{on}{retry}"),
+                progress,
+                cancel,
+            )?;
+        } else {
+            let rate = |cmd: &mut FfmpegCommand| {
+                x264(cmd);
+                cmd.args([
+                    "-b:v",
+                    &format!("{v_kbps}k"),
+                    "-maxrate",
+                    &format!("{}k", v_kbps * 3 / 2),
+                ]);
+                cmd.args(["-bufsize", &format!("{}k", v_kbps * 2)]);
+                cmd.args(["-passlogfile"]).arg(&passlog);
+            };
 
-        let mut pass2 = ffmpeg();
-        base(&mut pass2);
-        rate(&mut pass2);
-        pass2.args(["-pass", "2"]);
-        plan.apply(&mut pass2);
-        if audio_kbps > 0 {
-            pass2
-                .codec_audio("aac")
-                .args(["-b:a", &format!("{audio_kbps}k")]);
+            let mut pass1 = ffmpeg();
+            base(&mut pass1);
+            rate(&mut pass1);
+            pass1
+                .args(["-pass", "1"])
+                .no_audio()
+                .format("null")
+                .overwrite()
+                .output(null_output());
+            run(
+                &mut pass1,
+                duration,
+                0.0,
+                0.45,
+                &format!("Pass 1/2: analyzing{retry}"),
+                progress,
+                cancel,
+            )?;
+
+            let mut pass2 = ffmpeg();
+            base(&mut pass2);
+            rate(&mut pass2);
+            pass2.args(["-pass", "2"]);
+            finish(&mut pass2, audio_kbps);
+            run(
+                &mut pass2,
+                duration,
+                0.45,
+                0.55,
+                &format!("Pass 2/2: encoding{retry}"),
+                progress,
+                cancel,
+            )?;
         }
-        pass2
-            .args(["-movflags", "+faststart"])
-            .overwrite()
-            .output(out);
-        run(
-            &mut pass2,
-            duration,
-            0.45,
-            0.55,
-            &format!("Pass 2/2: encoding{retry}"),
-            progress,
-            cancel,
-        )?;
 
         let size = std::fs::metadata(out)?.len() as f64;
         if size < limit {

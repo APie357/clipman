@@ -28,6 +28,14 @@ Notes for coding agents working on clipman. Read README.md first for what it doe
 - `src/render.rs`: `render(job, progress, cancel)`. Two-pass x264 to `max_mb × 0.97` with
   retries, CRF 20 when there's no limit, lossless keyframe-aligned trims, the `AudioPlan`
   mix / noise suppression graph, and the RNNoise model download (pinned URL + SHA-256).
+- `src/gpu.rs`: hardware H.264 (VAAPI on Linux, render nodes tried biggest-VRAM first so
+  a dGPU beats the iGPU; NVENC; AMF / QSV on Windows). `detect()` test-encodes a few frames
+  per candidate once per process. The `Encoder` setting (`auto` = GPU only without a size
+  limit) decides per job; `render_compress` falls back to x264 if the GPU encode errors.
+  Hardware has no 2-pass: size-limited GPU renders are one VBR pass plus the size retries.
+  Measured on the RX 7900 (30 s 1440p60 to 720p60): VAAPI ~4.5x faster than x264 slow, VMAF
+  89 vs 95 at the same size; QP 24 ~ CRF 20 quality at ~1.5x the size. Only VAAPI has been
+  tested on real hardware; the NVENC/AMF/QSV options are untested.
 - `src/player.rs`: preview. A video thread decodes rgb24 frames (`-vf scale=…`), paced against
   a shared wall clock. Scrubbing: a background "scrub strip" (854 px, 10 fps, max 600 frames,
   stored as JPEG from ffmpeg's MJPEG output) is shown instantly on seek. The exact frame is decoded only after the playhead rests

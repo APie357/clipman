@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
-//! The Settings dialog: clips folder, noise suppression strength, output prefix,
+//! The Settings dialog: clips folder, noise suppression strength, video encoder, output prefix,
 //! quality presets, audio track names, and regenerating the right-click menu.
 
 use eframe::egui::{self, RichText};
 
-use crate::settings::{Denoise, Preset, PresetKind, Settings, TrackCfg, fmt_num};
+use crate::settings::{Denoise, Encoder, Preset, PresetKind, Settings, TrackCfg, fmt_num};
 
 pub enum Outcome {
     /// Saved with the Save button (or Regenerate) — use these settings.
@@ -28,6 +28,21 @@ pub struct SettingsUi {
     offer_thunar_restart: bool,
 }
 
+const ENCODER_CHOICES: [(Encoder, &str, &str); 3] = [
+    (
+        Encoder::Auto,
+        "Auto",
+        "GPU for presets without a size limit (several times faster, somewhat larger files); \
+         CPU when fitting a size limit, where it looks clearly better at the same size",
+    ),
+    (
+        Encoder::Gpu,
+        "GPU",
+        "Always the GPU: fastest, but softer when fitting a size limit",
+    ),
+    (Encoder::Cpu, "CPU (x264)", "Always x264: best quality per MB, slowest"),
+];
+
 const DENOISE_CHOICES: [(Denoise, &str); 3] = [
     (Denoise::None, "Not offered"),
     (Denoise::Off, "Offered (off)"),
@@ -48,6 +63,10 @@ impl SettingsUi {
                     },
                 );
             }
+        }
+        // find the GPU encoder in the background so the dialog can show it
+        if crate::gpu::detected().is_none() {
+            std::thread::spawn(crate::gpu::detect);
         }
         let rows = draft
             .presets
@@ -208,6 +227,48 @@ impl SettingsUi {
             ui.add(egui::Slider::new(&mut self.draft.denoise_strength, 0..=100).suffix("%"));
             ui.label("Full");
         });
+        ui.add_space(8.0);
+
+        // encoder
+        ui.label(RichText::new("Video encoder").strong());
+        ui.horizontal(|ui| {
+            let (_, text, _) = ENCODER_CHOICES
+                .iter()
+                .find(|c| c.0 == self.draft.encoder)
+                .unwrap();
+            egui::ComboBox::from_id_salt("encoder")
+                .selected_text(*text)
+                .show_ui(ui, |ui| {
+                    for (v, text, hint) in ENCODER_CHOICES {
+                        ui.selectable_value(&mut self.draft.encoder, v, text)
+                            .on_hover_text(hint);
+                    }
+                });
+            match crate::gpu::detected() {
+                None => {
+                    ui.weak("Looking for a GPU encoder…");
+                    ui.ctx()
+                        .request_repaint_after(std::time::Duration::from_millis(200));
+                }
+                Some(Some(hw)) => {
+                    ui.weak(format!("GPU: {}", hw.describe()));
+                }
+                Some(None) if self.draft.encoder == Encoder::Cpu => {
+                    ui.weak("No working GPU encoder found");
+                }
+                Some(None) => {
+                    ui.colored_label(
+                        ui.visuals().warn_fg_color,
+                        "No working GPU encoder found: renders use the CPU",
+                    );
+                }
+            }
+        });
+        let (_, _, hint) = ENCODER_CHOICES
+            .iter()
+            .find(|c| c.0 == self.draft.encoder)
+            .unwrap();
+        ui.weak(*hint);
         ui.add_space(8.0);
 
         // presets

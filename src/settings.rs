@@ -117,6 +117,30 @@ pub enum Denoise {
     On,
 }
 
+/// Which video encoder compress presets use.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default, clap::ValueEnum)]
+#[serde(rename_all = "lowercase")]
+pub enum Encoder {
+    /// GPU for presets without a size limit (fast, a bit larger files); x264 when
+    /// fitting a size limit, where it looks clearly better at the same size.
+    #[default]
+    Auto,
+    /// Always x264 on the CPU.
+    Cpu,
+    /// Always the GPU when one works (falls back to x264 otherwise).
+    Gpu,
+}
+
+impl Encoder {
+    pub fn uses_gpu(self, size_limited: bool) -> bool {
+        match self {
+            Encoder::Auto => !size_limited,
+            Encoder::Cpu => false,
+            Encoder::Gpu => true,
+        }
+    }
+}
+
 fn d_true() -> bool {
     true
 }
@@ -168,6 +192,8 @@ pub struct Settings {
     /// Noise suppression strength in percent; becomes arnndn's `mix`.
     #[serde(default = "d_strength")]
     pub denoise_strength: u8,
+    #[serde(default)]
+    pub encoder: Encoder,
     /// Every output is `<prefix><clip name><preset suffix>.mp4`.
     #[serde(default = "d_prefix")]
     pub output_prefix: String,
@@ -185,6 +211,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             denoise_strength: d_strength(),
+            encoder: Encoder::default(),
             output_prefix: d_prefix(),
             clips_folder: None,
             presets: d_presets(),
@@ -365,6 +392,7 @@ mod tests {
         assert!(s.presets[2].is_original());
         assert_eq!(s.tracks["Voice"].denoise, Denoise::On);
         assert_eq!(s.clips_folder, None);
+        assert_eq!(s.encoder, Encoder::Auto);
     }
 
     #[test]

@@ -24,6 +24,7 @@ Render options (any of them switches to rendering):
 | `--start S`, `--end S` | Range to keep, in seconds |
 | `--audio 1,2` / `none` | Audio tracks to mix into one (1-based). Default: tracks ticked by default in Settings |
 | `--denoise 2,3` / `none` | Tracks to run noise suppression on. Default: tracks set to *On by default* |
+| `--encoder auto\|cpu\|gpu` | Video encoder. Default: the one chosen in Settings |
 | `--out PATH` | Output file (single clip only) |
 | `--render` | Render with all the defaults |
 | `--no-window` | Show progress in the terminal even when there isn't one attached |
@@ -54,8 +55,11 @@ also returns to the browser after saving.
   volume. Speech tracks have a *Noise suppression* toggle (RNNoise). The preview plays the
   actual mix, with noise suppression once its model is downloaded.
 - **Preset** dropdown: every preset from Settings. Compress presets fit the clip under
-  their max size (two-pass x264), or use a fixed high quality (CRF 20) when they have no
-  max size. *Source* presets copy the video without re-encoding; its start snaps to the
+  their max size (two-pass x264), or use a fixed high quality when they have no max size.
+  The *Video encoder* setting picks CPU or GPU: *Auto* (the default) uses the GPU (VAAPI,
+  NVENC, AMF or Quick Sync, whichever works) only for presets without a max size, where
+  it's several times faster for somewhat larger files. Fitting a size limit stays on x264,
+  which looks clearly better at the same size. A failed GPU encode falls back to x264. *Source* presets copy the video without re-encoding; its start snaps to the
   keyframe at or before the start handle (GSR writes one every ~2 s), and the summary shows
   where it will actually start.
 - **Save** renders with a progress bar in the window (Cancel stops it). The editor closes
