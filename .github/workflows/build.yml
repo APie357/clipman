@@ -23,7 +23,7 @@ jobs:
     # machine it was built on, so building on an older one makes it run on more distros
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Build dependencies
         run: |
           sudo apt-get update
@@ -40,7 +40,7 @@ jobs:
           cp target/appimage/*.AppImage dist/
           tar -C target/release -czf dist/clipman-linux-x86_64.tar.gz clipman
           ls -la dist
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: clipman-linux
           path: dist/*
@@ -49,7 +49,7 @@ jobs:
   windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Test
@@ -62,7 +62,7 @@ jobs:
           New-Item -ItemType Directory -Force dist | Out-Null
           Compress-Archive -Path target/release/clipman.exe, README.md, LICENSE -DestinationPath dist/clipman-windows-x86_64.zip
           Get-ChildItem dist
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: clipman-windows
           path: dist/*
@@ -75,11 +75,11 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           files: dist/*
           generate_release_notes: true
