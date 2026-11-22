@@ -62,14 +62,15 @@ build() {
   export CARGO_TARGET_DIR=target
   # keep the build directory out of the binary (panic messages embed source paths)
   export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=${srcdir}=/build"
-  cargo build --frozen --release
+  # no update checker: pacman does updates
+  cargo build --frozen --release --no-default-features --features download
 }
 
 check() {
   cd "${_name}"
   export RUSTUP_TOOLCHAIN=stable
   export CARGO_TARGET_DIR=target
-  cargo test --frozen --release
+  cargo test --frozen --release --no-default-features --features download
 }
 
 package() {

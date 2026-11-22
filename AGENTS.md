@@ -46,6 +46,11 @@ Notes for coding agents working on clipman. Read README.md first for what it doe
   keep it, so nearby steps are instant. Seek times are formatted with 6 decimals: millisecond
   rounding (0.0167 → 0.017) skipped past frames. Audio is the same `AudioPlan` decoded to f32 PCM and played through
   rodio. Includes an ignored real-clip test (see Testing).
+- `src/update.rs`: update checker (`update-check` cargo feature, default on; the PKGBUILD
+  builds without it). GUI windows only, never CLI renders: one GitHub `releases/latest`
+  request a day, cached with the dismissed version in `<cache>/update-check.json`. The UI
+  only links to the release page. To see the UI without a release, write a fresh
+  `checked_at` and a `latest` of 9.9.9 into that file (scratch `XDG_CACHE_HOME`).
 - `src/menu.rs`: right-click menu entry points (`--write-menu`, `--remove-menu`, the Settings
   button), dispatching to `thunar.rs` (Linux) or `explorer.rs` (Windows).
 - `src/thunar.rs`: generates the Thunar `uca.xml` entries (`clipman-preset-<id>`, `clipman-edit`).

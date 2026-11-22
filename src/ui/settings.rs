@@ -24,6 +24,8 @@ pub struct SettingsUi {
     rows: Vec<Row>,
     /// Settings were already written (by Regenerate) even if the dialog is cancelled.
     applied: bool,
+    /// Whether update checks were on when the dialog opened (so a check is running).
+    settings_check_updates: bool,
     message: Option<String>,
     offer_thunar_restart: bool,
 }
@@ -77,6 +79,7 @@ impl SettingsUi {
             })
             .collect();
         Self {
+            settings_check_updates: settings.check_updates,
             draft,
             rows,
             applied: false,
@@ -278,6 +281,37 @@ impl SettingsUi {
             .unwrap();
         ui.weak(*hint);
         ui.add_space(8.0);
+
+        // updates
+        if crate::update::ENABLED {
+            ui.label(RichText::new("Updates").strong());
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut self.draft.check_updates, "Check for updates")
+                    .on_hover_text("Once a day, asks GitHub for the latest release. Nothing is downloaded or installed.");
+                use crate::update::Status;
+                match crate::update::status() {
+                    _ if !self.draft.check_updates => {}
+                    Status::Checking if self.settings_check_updates => {
+                        ui.weak("Checking…");
+                        ui.ctx().request_repaint_after(std::time::Duration::from_millis(300));
+                    }
+                    Status::Checking | Status::Disabled => {}
+                    Status::UpToDate => {
+                        ui.weak(format!("Clipman {} is up to date", crate::update::CURRENT));
+                    }
+                    Status::Available(r) => {
+                        ui.hyperlink_to(
+                            format!("Clipman {} is available (you have {})", r.version, crate::update::CURRENT),
+                            &r.url,
+                        );
+                    }
+                    Status::Failed(e) => {
+                        ui.weak(format!("Couldn\u{2019}t check: {e}"));
+                    }
+                }
+            });
+            ui.add_space(8.0);
+        }
 
         // presets
         ui.label(RichText::new("Quality presets").strong());

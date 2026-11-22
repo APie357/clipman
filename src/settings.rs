@@ -194,6 +194,9 @@ pub struct Settings {
     pub denoise_strength: u8,
     #[serde(default)]
     pub encoder: Encoder,
+    /// Look for a newer release once a day (only in builds with the update checker).
+    #[serde(default = "d_true")]
+    pub check_updates: bool,
     /// Every output is `<prefix><clip name><preset suffix>.mp4`.
     #[serde(default = "d_prefix")]
     pub output_prefix: String,
@@ -212,6 +215,7 @@ impl Default for Settings {
         Self {
             denoise_strength: d_strength(),
             encoder: Encoder::default(),
+            check_updates: true,
             output_prefix: d_prefix(),
             clips_folder: None,
             presets: d_presets(),
@@ -393,6 +397,7 @@ mod tests {
         assert_eq!(s.tracks["Voice"].denoise, Denoise::On);
         assert_eq!(s.clips_folder, None);
         assert_eq!(s.encoder, Encoder::Auto);
+        assert!(s.check_updates);
     }
 
     #[test]

@@ -156,6 +156,23 @@ impl Browser {
                     if ui.button("Refresh").clicked() {
                         self.refresh();
                     }
+                    if let Some(r) = crate::update::offer() {
+                        if ui
+                            .small_button("✖")
+                            .on_hover_text("Don\u{2019}t show this version again")
+                            .clicked()
+                        {
+                            crate::update::skip(&r.version);
+                        }
+                        ui.hyperlink_to(format!("Clipman {} is available", r.version), &r.url)
+                            .on_hover_text(format!(
+                                "You have {}. Opens the release page.",
+                                crate::update::CURRENT
+                            ));
+                    } else if crate::update::status() == crate::update::Status::Checking {
+                        ui.ctx()
+                            .request_repaint_after(std::time::Duration::from_millis(500));
+                    }
                     ui.add_sized(
                         [200.0, super::CONTROL_HEIGHT],
                         egui::TextEdit::singleline(&mut self.filter)

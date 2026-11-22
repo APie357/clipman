@@ -21,6 +21,7 @@ mod settings;
 #[cfg(any(target_os = "linux", test))]
 mod thunar;
 mod ui;
+mod update;
 
 use std::io::{IsTerminal, Write};
 use std::path::PathBuf;

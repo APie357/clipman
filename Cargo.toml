@@ -23,10 +23,13 @@ sha2 = "0.11.1"
 ureq = { version = "3.5.2", optional = true }
 
 [features]
-default = ["download"]
+default = ["download", "update-check"]
 # Download ffmpeg when it's missing (Windows/macOS) and the RNNoise model. Pulls in a
 # TLS stack; `--no-default-features` builds without it.
 download = ["dep:ureq", "ffmpeg-sidecar/download_ffmpeg"]
+# Look for a newer GitHub release once a day (can be turned off in Settings). Distro
+# packages build without it: their package manager does updates.
+update-check = ["download"]
 
 [profile.release]
 lto = "thin"

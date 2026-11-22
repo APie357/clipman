@@ -115,6 +115,9 @@ impl App {
             audio: None,
             audio_tried: false,
         };
+        if !matches!(start, Start::Render(_)) {
+            crate::update::start(app.settings.check_updates);
+        }
         app.screen = match start {
             Start::Browser => {
                 app.browser = Some(browser::Browser::new(&app.settings));
@@ -174,6 +177,7 @@ impl eframe::App for App {
             self.settings_ui = None;
             if let Outcome::Saved(s) = outcome {
                 self.settings = s;
+                crate::update::start(self.settings.check_updates); // if just turned on
                 if let Screen::Editor(ed) = &mut self.screen {
                     ed.apply_settings(&self.settings);
                 }

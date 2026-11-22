@@ -75,14 +75,19 @@ Stored as JSON in `~/.config/clipman/settings.json` (Windows: `%APPDATA%\clipman
 
 - **Clips folder** for the browser.
 - **Noise suppression strength** 0–100% (blends the original back in; 0% = off).
+- **Video encoder**: *Auto*, *GPU* or *CPU (x264)*, with the GPU encoder that was found
+  (see *Preset* above).
+- **Check for updates**: once a day, asks GitHub for the latest release and shows a link in
+  the clip browser when there's a newer one (✖ hides that version). Nothing is downloaded or
+  installed. The Arch package is built without it, since pacman does its updates.
 - **File name prefix**.
 - **Quality presets**: name (blank shows as e.g. `720p60`), max height, max fps, max size in
   MB (blank = no limit), file suffix. Add compress or source presets; any preset can
   be removed. Clips are never upscaled.
-- **Regenerate right-click menu** (Linux): rewrites the *Clipman* submenu in Thunar from the
-  presets (one entry per compress preset, plus *Open in Clipman…*), keeping your other custom
-  actions and backing up `uca.xml`. Thunar rereads it after a restart; the dialog offers to
-  restart it.
+- **Regenerate right-click menu**: rewrites the *Clipman* submenu from the presets (one entry
+  per compress preset, plus *Open in Clipman…*). On Linux it's Thunar's: other custom actions
+  are kept and `uca.xml` is backed up. Thunar rereads it after a restart, and the dialog offers
+  to restart it. On Windows it's Explorer's (see *Windows* below).
 - **Audio tracks**: matched by the name stored in the clip (set in GPU Screen Recorder).
   For each name: how it's shown, whether it's ticked by default, and noise suppression
   (*Not offered* / *Offered (off)* / *On by default*). Unnamed tracks show as "Track N".
@@ -142,7 +147,8 @@ and a Windows `.exe` (zipped), uploaded as workflow artifacts. Pushing a `v*` ta
 `git tag v0.2.0 && git push --tags`) also publishes them as a GitHub release.
 
 Without network access, build with `--no-default-features`; ffmpeg and the noise model then
-have to be installed by hand.
+have to be installed by hand. `--no-default-features --features download` keeps the downloads
+but leaves out the update checker (for packages managed by a package manager).
 
 ## GPU Screen Recorder config
 
