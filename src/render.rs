@@ -307,6 +307,148 @@ fn null_output() -> &'static str {
     if cfg!(windows) { "NUL" } else { "/dev/null" }
 }
 
+// ---------------------------------------------------------------------------
+// Metadata
+// ---------------------------------------------------------------------------
+
+/// What's stored in every rendered clip: a `clipman` tag with JSON describing everything
+/// needed to make the same clip again from the source file, and a readable `comment`.
+/// Only the source's file name is stored, not its path (clips get shared).
+struct Meta {
+    base: serde_json::Value,
+    comment: String,
+}
+
+/// Index of the first frame at or after `t` (frame numbers are 0-based).
+fn frame_at(all: &[f64], t: f64) -> usize {
+    all.partition_point(|&p| p < t - 0.0005)
+}
+
+/// The range to give ffmpeg so it keeps exactly the frames `frame_at(start)..frame_at(end)`:
+/// from just before the first kept frame's real timestamp to just before the first frame
+/// left out. Cutting at the nominal times instead keeps a frame too many when frames sit
+/// a hair off the grid (GSR writes e.g. 4.999999 and 7.999999).
+fn exact_span(all: &[f64], start: f64, end: f64, duration: f64) -> (f64, f64) {
+    if all.is_empty() {
+        return (start, end);
+    }
+    let (a, b) = (frame_at(all, start), frame_at(all, end));
+    let from = all.get(a).map_or(start, |p| p - 0.0005).max(0.0);
+    let to = all.get(b).map_or(duration.max(end), |p| p - 0.0005);
+    (from, to)
+}
+
+fn ffmpeg_version() -> Option<String> {
+    let out = media::quiet_command(media::ffmpeg_bin())
+        .arg("-version")
+        .output()
+        .ok()?;
+    let line = String::from_utf8_lossy(&out.stdout).lines().next()?.to_string();
+    line.strip_prefix("ffmpeg version ")
+        .and_then(|v| v.split_whitespace().next())
+        .map(str::to_string)
+}
+
+impl Meta {
+    /// `start`..`end` is what ends up in the file (for a source preset, `start` is the
+    /// keyframe it snapped to; `requested_start` is where the handle was).
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        job: &Job,
+        info: &media::ClipInfo,
+        frames: &media::FrameTimes,
+        requested_start: f64,
+        start: f64,
+        end: f64,
+        plan: &AudioPlan,
+    ) -> Self {
+        use serde_json::json;
+        let src_name = job
+            .src
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+        let size = std::fs::metadata(&job.src).map(|m| m.len()).ok();
+        let denoised = |t: &usize| {
+            job.strength > 0 && job.denoise.contains(t) && *plan != AudioPlan::None
+        };
+        let tracks: Vec<_> = job
+            .tracks
+            .iter()
+            .map(|t| {
+                json!({
+                    "track": t + 1, // as in --audio
+                    "name": info.audio_names.get(*t).cloned().flatten(),
+                    "denoise": denoised(t),
+                })
+            })
+            .collect();
+        let mut preset = json!(job.preset);
+        if job.preset.is_original() {
+            // height / fps / size don't apply to a stream copy
+            for k in ["height", "fps", "max_mb"] {
+                preset.as_object_mut().map(|o| o.remove(k));
+            }
+        }
+        let mut audio = json!({ "tracks": tracks });
+        if plan.needs_model() {
+            audio["denoise_strength"] = json!(job.strength);
+            audio["denoise_model"] = json!({ "file": RNNOISE_FILE, "sha256": RNNOISE_SHA256 });
+        }
+        let mut base = json!({
+            "format": 1,
+            "clipman": env!("CARGO_PKG_VERSION"),
+            "ffmpeg": ffmpeg_version(),
+            "source": {
+                "name": src_name,
+                "size": size,
+                "duration": info.duration,
+                "width": info.width,
+                "height": info.height,
+                "fps": info.fps,
+            },
+            "start": (start * 1e6).round() / 1e6,
+            "end": (end * 1e6).round() / 1e6,
+            "preset": preset,
+            "audio": audio,
+        });
+        let mut frame_text = String::new();
+        if !frames.all.is_empty() {
+            let (a, b) = (frame_at(&frames.all, start), frame_at(&frames.all, end));
+            // end_frame is exclusive: the clip holds frames start_frame..end_frame
+            base["start_frame"] = json!(a);
+            base["end_frame"] = json!(b);
+            if b > a {
+                frame_text = format!(" (frames {a}\u{2013}{})", b - 1);
+            }
+        }
+        if (requested_start - start).abs() > 1e-6 {
+            base["requested_start"] = json!((requested_start * 1e6).round() / 1e6);
+        }
+        let comment = format!(
+            "Clipman: {src_name}, {}\u{2013}{}{frame_text}, {}",
+            media::fmt_time(start),
+            media::fmt_time(end),
+            job.preset.menu_text()
+        );
+        Self { base, comment }
+    }
+
+    /// Add the metadata (with the encoder details in `video`) and the mp4 flags to the
+    /// command writing the final file.
+    fn apply(&self, cmd: &mut FfmpegCommand, video: serde_json::Value) {
+        let mut m = self.base.clone();
+        m["video"] = video;
+        // the source's own global tags are just container branding
+        cmd.args(["-map_metadata:g", "-1"]);
+        cmd.arg("-metadata").arg(format!("clipman={m}"));
+        cmd.arg("-metadata").arg(format!("comment={}", self.comment));
+        // use_metadata_tags: mp4 drops custom keys like `clipman` without it
+        cmd.args(["-movflags", "+faststart+use_metadata_tags"]);
+    }
+}
+
 /// Render `job`. Returns the output path and its size in bytes.
 pub fn render(job: &Job, progress: Progress, cancel: &AtomicBool) -> Result<(PathBuf, u64)> {
     // ffmpeg runs from the cache dir, so relative paths would resolve against that
@@ -329,13 +471,27 @@ pub fn render(job: &Job, progress: Progress, cancel: &AtomicBool) -> Result<(Pat
         progress(0.0, "Getting noise suppression model…");
         ensure_model()?;
     }
+    let frames = media::frame_times(&job.src);
+    // a lossless cut starts on the keyframe at/before `start` so the copy doesn't begin
+    // with frozen frames
+    let cut = if job.preset.is_original() {
+        media::keyframe_before(&frames.keys, start)
+    } else {
+        start
+    };
+    let meta = Meta::new(job, &info, &frames, start, cut, end, &plan);
+    if let Some(dir) = job.dst.parent() {
+        std::fs::create_dir_all(dir)
+            .with_context(|| format!("couldn't create {}", dir.display()))?;
+    }
+    let (from, to) = exact_span(&frames.all, cut, end, info.duration);
     let tmp = TempDir::new()?;
     let out = tmp.0.join("out.mp4");
     if job.preset.is_original() {
-        render_original(job, &info, start, end, &plan, &out, progress, cancel)?;
+        render_original(job, cut, to, &plan, &meta, &out, progress, cancel)?;
     } else {
         render_compress(
-            job, &info, start, end, &plan, &tmp.0, &out, progress, cancel,
+            job, &info, from, to, &plan, &meta, &tmp.0, &out, progress, cancel,
         )?;
     }
     move_file(&out, &job.dst)?;
@@ -345,28 +501,30 @@ pub fn render(job: &Job, progress: Progress, cancel: &AtomicBool) -> Result<(Pat
 }
 
 fn trim(cmd: &mut FfmpegCommand, start: f64, dur: f64) {
-    cmd.seek(format!("{start:.3}"))
-        .duration(format!("{dur:.3}"));
+    // 6 decimals: rounding to ms would move the cut across frames that are a hair off
+    cmd.seek(format!("{start:.6}"))
+        .duration(format!("{dur:.6}"));
 }
 
+/// Lossless video cut from keyframe `k`.
 #[allow(clippy::too_many_arguments)]
 fn render_original(
     job: &Job,
-    info: &media::ClipInfo,
-    start: f64,
+    k: f64,
     end: f64,
     plan: &AudioPlan,
+    meta: &Meta,
     out: &Path,
     progress: Progress,
     cancel: &AtomicBool,
 ) -> Result<()> {
-    // Lossless video cut: start on the keyframe at/before `start` so the copy doesn't
-    // begin with frozen frames.
-    let k = media::keyframe_before(&media::keyframes(&job.src), start);
     let mut cmd = ffmpeg();
-    cmd.seek(format!("{:.3}", k + 0.001))
+    // seek just past the keyframe (copy starts on the keyframe at/before it); -t
+    // counts from the seek point, not from the keyframe
+    let seek = k + 0.001;
+    cmd.seek(format!("{seek:.6}"))
         .input(&job.src)
-        .duration(format!("{:.3}", end - k));
+        .duration(format!("{:.6}", end - seek));
     cmd.map("0:v:0").codec_video("copy");
     plan.apply(&mut cmd);
     match plan {
@@ -379,10 +537,9 @@ fn render_original(
                 .args(["-b:a", &format!("{ORIGINAL_MIX_AUDIO_KBPS}k")]);
         }
     }
-    cmd.args(["-avoid_negative_ts", "make_zero", "-movflags", "+faststart"])
-        .overwrite()
-        .output(out);
-    let _ = info;
+    cmd.args(["-avoid_negative_ts", "make_zero"]);
+    meta.apply(&mut cmd, serde_json::json!({ "encoder": "copy" }));
+    cmd.overwrite().output(out);
     run(
         &mut cmd,
         end - k,
@@ -401,6 +558,7 @@ fn render_compress(
     start: f64,
     end: f64,
     plan: &AudioPlan,
+    meta: &Meta,
     tmp: &Path,
     out: &Path,
     progress: Progress,
@@ -413,7 +571,7 @@ fn render_compress(
         None
     };
     if let Some(hw) = hw {
-        match encode(job, info, start, end, plan, tmp, out, Some(hw), progress, cancel) {
+        match encode(job, info, start, end, plan, meta, tmp, out, Some(hw), progress, cancel) {
             Err(e) if !e.is::<Cancelled>() => {
                 // e.g. a driver problem or a source the GPU path can't take: x264 still works
                 eprintln!("clipman: GPU encode ({}) failed, using the CPU: {e:#}", hw.codec());
@@ -421,7 +579,7 @@ fn render_compress(
             r => return r,
         }
     }
-    encode(job, info, start, end, plan, tmp, out, None, progress, cancel)
+    encode(job, info, start, end, plan, meta, tmp, out, None, progress, cancel)
 }
 
 /// One compress attempt with x264 (`hw` None) or a hardware encoder.
@@ -432,6 +590,7 @@ fn encode(
     start: f64,
     end: f64,
     plan: &AudioPlan,
+    meta: &Meta,
     tmp: &Path,
     out: &Path,
     hw: Option<&gpu::HwEncoder>,
@@ -460,29 +619,37 @@ fn encode(
     let x264 = |cmd: &mut FfmpegCommand| {
         cmd.codec_video("libx264").preset("slow").pix_fmt("yuv420p");
     };
-    let finish = |cmd: &mut FfmpegCommand, audio_kbps: u32| {
+    let codec = hw.map_or("libx264", |h| h.codec());
+    let finish = |cmd: &mut FfmpegCommand, audio_kbps: u32, mut video: serde_json::Value| {
         plan.apply(cmd);
         if *plan != AudioPlan::None {
             cmd.codec_audio("aac")
                 .args(["-b:a", &format!("{audio_kbps}k")]);
+            video["audio_kbps"] = audio_kbps.into();
         }
-        cmd.args(["-movflags", "+faststart"])
-            .overwrite()
-            .output(out);
+        video["encoder"] = codec.into();
+        video["filter"] = vf.as_str().into();
+        video["fpsmax"] = p.fps.into();
+        meta.apply(cmd, video);
+        cmd.overwrite().output(out);
     };
 
     let Some(limit_mb) = p.limit_mb() else {
         // no size limit: one pass at a fixed quality
         let mut cmd = ffmpeg();
         base(&mut cmd);
-        match hw {
-            Some(hw) => hw.quality_args(&mut cmd),
+        let video = match hw {
+            Some(hw) => {
+                hw.quality_args(&mut cmd);
+                serde_json::json!({ "qp": gpu::QUALITY_QP })
+            }
             None => {
                 x264(&mut cmd);
                 cmd.crf(NO_LIMIT_CRF);
+                serde_json::json!({ "preset": "slow", "crf": NO_LIMIT_CRF })
             }
-        }
-        finish(&mut cmd, NO_LIMIT_AUDIO_KBPS);
+        };
+        finish(&mut cmd, NO_LIMIT_AUDIO_KBPS, video);
         return run(
             &mut cmd,
             duration,
@@ -524,7 +691,8 @@ fn encode(
             let mut cmd = ffmpeg();
             base(&mut cmd);
             hw.bitrate_args(&mut cmd, v_kbps);
-            finish(&mut cmd, audio_kbps);
+            let video = serde_json::json!({ "passes": 1, "video_kbps": v_kbps, "attempt": attempt });
+            finish(&mut cmd, audio_kbps, video);
             run(
                 &mut cmd,
                 duration,
@@ -570,7 +738,13 @@ fn encode(
             base(&mut pass2);
             rate(&mut pass2);
             pass2.args(["-pass", "2"]);
-            finish(&mut pass2, audio_kbps);
+            let video = serde_json::json!({
+                "preset": "slow",
+                "passes": 2,
+                "video_kbps": v_kbps,
+                "attempt": attempt,
+            });
+            finish(&mut pass2, audio_kbps, video);
             run(
                 &mut pass2,
                 duration,
@@ -597,6 +771,25 @@ fn encode(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exact_frames() {
+        // GSR-style timestamps, a hair off the 60 fps grid
+        let all: Vec<f64> = (0..600)
+            .map(|i| i as f64 / 60.0 - if i % 60 == 0 { 1e-6 } else { 0.0 })
+            .map(|t: f64| t.max(0.0))
+            .collect();
+        assert_eq!(frame_at(&all, 5.0), 300); // 4.999999 counts as the frame at 5 s
+        assert_eq!(frame_at(&all, 5.01), 301);
+        let (from, to) = exact_span(&all, 5.0, 8.0, 10.0);
+        assert!(from < all[300] && from > all[299]);
+        assert!(to < all[480] && to > all[479]); // 480 (7.999999) is left out
+        assert_eq!(all.iter().filter(|&&p| p >= from && p < to).count(), 180);
+        // to the end of the clip: the clip's duration
+        assert_eq!(exact_span(&all, 9.0, 10.0, 10.0).1, 10.0);
+        // no frame info: the times as given
+        assert_eq!(exact_span(&[], 1.0, 2.0, 10.0), (1.0, 2.0));
+    }
 
     #[test]
     fn plans() {

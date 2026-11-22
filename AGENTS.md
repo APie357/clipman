@@ -19,7 +19,9 @@ Notes for coding agents working on clipman. Read README.md first for what it doe
   `--no-window`, otherwise the GUI progress window). Paths are made absolute here; see below.
 - `src/settings.rs`: the JSON settings. `Preset` (`type` compress|original, blank
   name shows as `<h>p<fps>`, `max_mb` None = no limit), `TrackCfg` keyed by the stream's
-  name tag, `output_path()` (single naming scheme, never overwrites, no stacked prefix).
+  name tag, `output_path()` (single naming scheme into `export_folder()`, default
+  `<Videos>/Exports`, never overwrites (`_2`, `_3`), no stacked prefix). The browser isn't
+  recursive, which is what keeps exports out of it.
 - `src/media.rs`: ffprobe (duration, size, fps, audio name tags, frame/keyframe times),
   `ffmpeg_bin()` / `ffprobe_bin()` (next to the exe, then PATH, then the download dir) and
   `ensure_ffmpeg()`, which downloads into the per-user data dir because the exe dir can be
@@ -82,6 +84,16 @@ Notes for coding agents working on clipman. Read README.md first for what it doe
 
 ## Gotchas (all hit during development)
 
+- **Exported clips carry metadata** (`Meta` in `render.rs`): a `clipman` JSON tag plus
+  `comment`. mp4 drops custom keys unless `-movflags +use_metadata_tags`; that mode also
+  duplicates the source's global tags, hence `-map_metadata:g -1`. Store the source's file
+  name only, never its path (clips get shared). Bump `format` if the JSON changes meaning.
+- **Frame-exact cuts:** GSR timestamps sit a hair off the grid (4.999999, 7.999999), so
+  cutting at nominal times kept an extra frame. `exact_span` cuts from just before the
+  first kept frame's real pts to just before the first dropped one, formatted with 6
+  decimals. With stream copy, `-t` counts from the seek point (keyframe + 1 ms), not from the
+  keyframe. The metadata's `start_frame` / `end_frame` use the same `frame_at` rule, and the
+  file's frame count matches `end_frame - start_frame`.
 - **ffmpeg runs with the cache dir as its working directory**, so `arnndn=m=lq.rnnn` needs
   no filter-graph escaping (Windows paths like `C:\…` would need it). Consequence: every
   input/output path must be absolute (`std::path::absolute`, not `canonicalize`, which gives
@@ -119,7 +131,8 @@ Notes for coding agents working on clipman. Read README.md first for what it doe
 - Renders: copy a clip into a scratch dir and run e.g. `clipman clip.mp4 --preset secondary --start 20 --end 35 --audio 1,2 --denoise 2`
   with `XDG_CONFIG_HOME` / `XDG_CACHE_HOME` pointed at scratch dirs so the user's settings and
   cache aren't touched. `CLIPMAN_DEBUG=1` prints every ffmpeg command and the editor's key events.
-  Never write test output into `~/Videos`.
+  Never write test output into `~/Videos`; the default export folder is `~/Videos/Exports`, so
+  also point `HOME` at a scratch dir (or set `export_folder`) when testing renders.
 - Driving the GUI on Hyprland: `hyprctl dispatch "hl.dsp.send_shortcut({ mods = 'CTRL', key = 's', window = 'pid:N' })"`
   sends keys. `hyprctl eval 'hl.window_rule{…}'` adds a temporary rule (gone after
   `hyprctl reload`). `grim -g "x,y wxh"` takes screenshots. Don't `pkill -f clipman` from a

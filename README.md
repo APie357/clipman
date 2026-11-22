@@ -66,14 +66,35 @@ also returns to the browser after saving.
 - **Save** renders with a progress bar in the window (Cancel stops it). The editor closes
   when done, or goes back to the browser if it was opened from there.
 
-Output files are `<prefix><clip name><preset suffix>.mp4` next to the clip (prefix default
-`remuxed_`). Nothing is ever overwritten; a taken name becomes `…2.mp4`, `…3.mp4`.
+Output files are `<prefix><clip name><preset suffix>.mp4` in the export folder (default
+`~/Videos/Exports`, created when needed; prefix default `remuxed_`). Nothing is ever
+overwritten; a taken name becomes `…_2.mp4`, `…_3.mp4`. The clip browser only lists the
+files directly in the clips folder, so exports don't show up there.
+
+Every rendered clip records how it was made, so the same clip can be made again from the
+original. A `clipman` metadata tag holds JSON with:
+- the source's file name, size, duration and resolution (only the file name, never the full
+  path, since clips get shared)
+- `start` / `end` in seconds and `start_frame` / `end_frame` (0-based; the clip holds frames
+  `start_frame` up to but not including `end_frame`, and renders cut on exactly those frames)
+- for Source presets, `requested_start` (where the start handle was) when the cut snapped to a keyframe
+- the preset, the audio tracks (numbered as in `--audio`, with their names) and which got noise
+  suppression, its strength and the model's checksum
+- the video encoder and its settings (CRF / QP / bitrate, passes, size-retry attempt,
+  the filter chain), and the clipman and ffmpeg versions
+
+There's also a readable `comment`, e.g.
+`Clipman: Replay_2026-09-20_15-26-10.mp4, 0:20.50–0:30.25 (frames 1230–1814), 720p60 · 20 MB`.
+Read them with
+`ffprobe -v error -show_entries format_tags=clipman,comment -of json clip.mp4`.
 
 ## Settings
 
 Stored as JSON in `~/.config/clipman/settings.json` (Windows: `%APPDATA%\clipman\settings.json`).
 
 - **Clips folder** for the browser.
+- **Export folder** where rendered clips go (default `~/Videos/Exports`). If it's the clips
+  folder itself, the dialog warns that exports will show in the browser.
 - **Noise suppression strength** 0–100% (blends the original back in; 0% = off).
 - **Video encoder**: *Auto*, *GPU* or *CPU (x264)*, with the GPU encoder that was found
   (see *Preset* above).

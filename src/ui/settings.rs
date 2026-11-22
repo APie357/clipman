@@ -231,6 +231,37 @@ impl SettingsUi {
         });
         ui.add_space(8.0);
 
+        // export folder
+        ui.label(RichText::new("Export folder").strong());
+        ui.horizontal(|ui| {
+            let folder = self.draft.export_folder();
+            ui.label(folder.display().to_string());
+            if ui.button("Choose…").clicked() {
+                // the picker needs an existing folder to start in
+                let start = if folder.is_dir() {
+                    folder
+                } else {
+                    self.draft.clips_folder()
+                };
+                if let Some(dir) = rfd::FileDialog::new().set_directory(start).pick_folder() {
+                    self.draft.export_folder = Some(dir);
+                }
+            }
+            if self.draft.export_folder.is_some() && ui.button("Use default").clicked() {
+                self.draft.export_folder = None;
+            }
+        });
+        if self.draft.exports_in_clips_folder() {
+            ui.colored_label(
+                ui.visuals().warn_fg_color,
+                "This is the clips folder, so saved clips will show in the clip browser. \
+                 Pick a separate folder to keep them out of it.",
+            );
+        } else {
+            ui.weak("Saved clips go here (created when needed). They don\u{2019}t show in the clip browser.");
+        }
+        ui.add_space(8.0);
+
         // noise suppression
         ui.label(RichText::new("Noise suppression strength").strong());
         ui.horizontal(|ui| {

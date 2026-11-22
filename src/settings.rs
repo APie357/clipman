@@ -206,6 +206,9 @@ pub struct Settings {
     /// Folder shown by the clip browser.
     #[serde(default)]
     pub clips_folder: Option<PathBuf>,
+    /// Where rendered clips go (None = `<Videos>/Exports`). Never shown in the browser.
+    #[serde(default)]
+    pub export_folder: Option<PathBuf>,
     #[serde(default = "d_presets")]
     pub presets: Vec<Preset>,
     /// Keyed by the track's name tag in the clip (as set in GPU Screen Recorder).
@@ -222,6 +225,7 @@ impl Default for Settings {
             check_updates: true,
             output_prefix: d_prefix(),
             clips_folder: None,
+            export_folder: None,
             presets: d_presets(),
             tracks: d_tracks(),
         }
@@ -251,6 +255,13 @@ pub fn default_presets() -> Vec<Preset> {
             suffix: String::new(),
         },
     ]
+}
+
+/// For comparing folders: resolves `..` and symlinks when the folder exists.
+fn abs(p: &Path) -> PathBuf {
+    std::fs::canonicalize(p)
+        .or_else(|_| std::path::absolute(p))
+        .unwrap_or_else(|_| p.to_path_buf())
 }
 
 pub fn config_dir() -> PathBuf {
@@ -301,6 +312,23 @@ impl Settings {
             .unwrap_or_else(|| PathBuf::from("."))
     }
 
+    /// Are exports saved straight into the clips folder? The clip browser lists only the
+    /// files directly in the clips folder, so a separate export folder (even a subfolder
+    /// like the default `Videos/Exports`) never shows up there.
+    pub fn exports_in_clips_folder(&self) -> bool {
+        abs(&self.export_folder()) == abs(&self.clips_folder())
+    }
+
+    /// Where rendered clips are saved: the chosen folder, or `Exports` in the Videos folder.
+    pub fn export_folder(&self) -> PathBuf {
+        self.export_folder.clone().unwrap_or_else(|| {
+            dirs::video_dir()
+                .or_else(|| dirs::home_dir().map(|h| h.join("Videos")))
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join("Exports")
+        })
+    }
+
     pub fn preset(&self, id: &str) -> Option<&Preset> {
         self.presets.iter().find(|p| p.id == id)
     }
@@ -339,10 +367,10 @@ impl Settings {
         (tracks, denoise)
     }
 
-    /// `<prefix><clip name><suffix>.mp4` next to `src`, numbered (…2, …3) instead of
-    /// overwriting anything, including the source when prefix and suffix are empty.
+    /// `<prefix><clip name><suffix>.mp4` in the export folder, numbered (…_2, …_3) instead
+    /// of overwriting anything, including the source when it's in that folder too.
     pub fn output_path(&self, src: &Path, suffix: &str) -> PathBuf {
-        let dir = src.parent().map(Path::to_path_buf).unwrap_or_default();
+        let dir = self.export_folder();
         let mut stem = src
             .file_stem()
             .unwrap_or_default()
@@ -356,7 +384,7 @@ impl Settings {
         let mut out = dir.join(format!("{base}.mp4"));
         let mut n = 2;
         while out.exists() {
-            out = dir.join(format!("{base}{n}.mp4"));
+            out = dir.join(format!("{base}_{n}.mp4"));
             n += 1;
         }
         out
@@ -400,6 +428,8 @@ mod tests {
         assert!(s.presets[2].is_original());
         assert_eq!(s.tracks["Voice"].denoise, Denoise::On);
         assert_eq!(s.clips_folder, None);
+        assert_eq!(s.export_folder, None);
+        assert!(s.export_folder().ends_with("Exports"));
         assert_eq!(s.encoder, Encoder::Auto);
         assert!(s.check_updates);
         assert!(!s.gpu_playback);
@@ -423,7 +453,10 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let src = dir.join("clip.mp4");
         std::fs::write(&src, b"x").unwrap();
-        let mut s = Settings::default();
+        let mut s = Settings {
+            export_folder: Some(dir.clone()),
+            ..Default::default()
+        };
         assert_eq!(
             s.output_path(&src, "").file_name().unwrap(),
             "remuxed_clip.mp4"
@@ -434,8 +467,19 @@ mod tests {
                 .unwrap(),
             "remuxed_clip_1080p.mp4"
         );
+        // exports go to the export folder wherever the clip is
+        assert_eq!(
+            s.output_path(Path::new("/elsewhere/clip.mp4"), "").parent(),
+            Some(dir.as_path())
+        );
         s.output_prefix.clear();
-        assert_eq!(s.output_path(&src, "").file_name().unwrap(), "clip2.mp4"); // never the source
+        assert_eq!(s.output_path(&src, "").file_name().unwrap(), "clip_2.mp4"); // never the source
+        // the settings dialog warns when exports would land in the clips folder
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        s.clips_folder = Some(dir.join("sub/.."));
+        assert!(s.exports_in_clips_folder());
+        s.clips_folder = Some(std::env::temp_dir());
+        assert!(!s.exports_in_clips_folder());
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

@@ -9,7 +9,7 @@ use ffmpeg_sidecar::command::FfmpegCommand;
 
 /// Constant quality used when a preset has no size limit. Hardware QP isn't CRF: on
 /// VAAPI (RX 7900), QP 24 scores like x264 CRF 20 (VMAF ~98) at ~1.5x the size.
-const QUALITY_QP: u32 = 24;
+pub const QUALITY_QP: u32 = 24;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Backend {

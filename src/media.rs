@@ -244,10 +244,6 @@ pub fn frame_times(path: &Path) -> FrameTimes {
     ft
 }
 
-pub fn keyframes(path: &Path) -> Vec<f64> {
-    frame_times(path).keys
-}
-
 /// Index of the frame showing at time `t` (the last one starting at or before it).
 pub fn frame_index(all: &[f64], t: f64) -> usize {
     all.partition_point(|&p| p <= t + 0.0005).saturating_sub(1)
