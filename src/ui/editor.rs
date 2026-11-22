@@ -357,7 +357,13 @@ impl Editor {
         if std::env::var_os("CLIPMAN_DEBUG").is_some() {
             ctx.input(|inp| {
                 for e in &inp.events {
-                    if let egui::Event::Key { key, pressed, modifiers, .. } = e {
+                    if let egui::Event::Key {
+                        key,
+                        pressed,
+                        modifiers,
+                        ..
+                    } = e
+                    {
                         eprintln!("key {key:?} pressed={pressed} {modifiers:?}");
                     }
                 }
@@ -374,7 +380,8 @@ impl Editor {
             });
             // modifiers as recorded on the key event, not the state at frame time
             // (a quick Ctrl+S can release Ctrl before the frame is drawn)
-            let save = save || ctx.input_mut(|inp| inp.consume_key(egui::Modifiers::COMMAND, Key::S));
+            let save =
+                save || ctx.input_mut(|inp| inp.consume_key(egui::Modifiers::COMMAND, Key::S));
             let pos = self.player.position();
             if space {
                 self.toggle(settings, mixer);
@@ -579,10 +586,9 @@ impl Editor {
         if want_model {
             self.prefetch_model();
         }
-        if changed
-            && let Some(m) = mixer {
-                let plan = self.preview_plan(settings);
-                self.player.restart_audio(m, &plan);
-            }
+        if changed && let Some(m) = mixer {
+            let plan = self.preview_plan(settings);
+            self.player.restart_audio(m, &plan);
+        }
     }
 }

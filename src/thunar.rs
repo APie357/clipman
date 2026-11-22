@@ -127,8 +127,6 @@ mod tests {
         assert!(is_ours(
             "<action><unique-id>clipman-edit</unique-id></action>"
         ));
-        assert!(!is_ours(
-            "<action><unique-id>discord-trim-1</unique-id></action>"
-        ));
+        assert!(!is_ours("<action><unique-id>other-1</unique-id></action>"));
     }
 }

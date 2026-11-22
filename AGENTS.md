@@ -2,24 +2,22 @@
 
 Notes for coding agents working on clipman. Read README.md first for what it does.
 
-This is a Rust port of the user's earlier Python scripts (the private `discord-clip-tools`
-repo). **Requirements the user set:**
+**Requirements the user set:**
 
 - **One binary** with args. Don't split it into several executables.
 - **Native UI only.** No web views, Electron or Tauri; the user finds web apps slow and bloated.
 - **ffmpeg through the ffmpeg-sidecar wrapper** (typed builder + event stream), not
   hand-assembled shell strings.
-- Render progress in the **editor's own window**; no external progress popups (no zenity).
+- Render progress in the **editor's own window**; no external progress popups.
 - **Cross-platform, Windows planned.** Keep platform-specific bits behind `cfg`.
-- The user handles removing the old scripts' Thunar entries (`discord-*` ids). Don't touch them.
+- Only manage Thunar actions whose unique-id starts with `clipman-`; leave every other entry alone.
 
 ## Layout
 
 - `src/main.rs`: CLI (clap) and routing. `clipman` opens the browser, `clipman FILE` the
   editor, and `FILE --render-option` renders (terminal progress when stderr is a TTY or with
   `--no-window`, otherwise the GUI progress window). Paths are made absolute here; see below.
-- `src/settings.rs`: the JSON settings. Its schema is compatible with the old scripts'
-  settings.json, which is imported on first run. `Preset` (`type` compress|original, blank
+- `src/settings.rs`: the JSON settings. `Preset` (`type` compress|original, blank
   name shows as `<h>p<fps>`, `max_mb` None = no limit), `TrackCfg` keyed by the stream's
   name tag, `output_path()` (single naming scheme, never overwrites, no stacked prefix).
 - `src/media.rs`: ffprobe (duration, size, fps, audio name tags, keyframes), `ensure_ffmpeg()`
@@ -36,7 +34,7 @@ repo). **Requirements the user set:**
 - `scripts/install.sh`: Linux installer. `--hyprland` / `--gsr` are opt-in. `extras/` holds
   the Hyprland rule, the desktop entry and the GSR config snapshot (`@HOME@` placeholders).
 
-## Gotchas (all hit during the port)
+## Gotchas (all hit during development)
 
 - **ffmpeg runs with the cache dir as its working directory**, so `arnndn=m=lq.rnnn` needs
   no filter-graph escaping (Windows paths like `C:\…` would need it). Consequence: every
@@ -63,7 +61,7 @@ repo). **Requirements the user set:**
 
 ## Testing
 
-- `cargo test`: unit tests (settings parsing incl. the old JSON, naming, audio graphs,
+- `cargo test`: unit tests (settings parsing, naming, audio graphs,
   Thunar XML, time parsing).
 - Real playback: `CLIPMAN_TEST_CLIP=/path/clip.mp4 cargo test --release plays_real_clip -- --ignored --nocapture`
   (expects ~60 fps of frames and a correct clock; it plays a little audio).

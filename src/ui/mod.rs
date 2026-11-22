@@ -145,21 +145,22 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // settings dialog (modal over whatever is showing)
         if let Some(ui) = &mut self.settings_ui
-            && let Some(outcome) = ui.show(ctx) {
-                self.settings_ui = None;
-                if let Outcome::Saved(s) = outcome {
-                    self.settings = s;
-                    if let Screen::Editor(ed) = &mut self.screen {
-                        ed.apply_settings(&self.settings);
-                    }
-                    if let Some(b) = &mut self.browser {
-                        b.set_folder(self.settings.clips_folder());
-                    }
+            && let Some(outcome) = ui.show(ctx)
+        {
+            self.settings_ui = None;
+            if let Outcome::Saved(s) = outcome {
+                self.settings = s;
+                if let Screen::Editor(ed) = &mut self.screen {
+                    ed.apply_settings(&self.settings);
                 }
-                if matches!(self.screen, Screen::SettingsOnly) {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                if let Some(b) = &mut self.browser {
+                    b.set_folder(self.settings.clips_folder());
                 }
             }
+            if matches!(self.screen, Screen::SettingsOnly) {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+        }
 
         match &mut self.screen {
             Screen::Browser => {

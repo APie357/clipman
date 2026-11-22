@@ -192,9 +192,9 @@ impl SettingsUi {
                 && let Some(dir) = rfd::FileDialog::new()
                     .set_directory(self.draft.clips_folder())
                     .pick_folder()
-                {
-                    self.draft.clips_folder = Some(dir);
-                }
+            {
+                self.draft.clips_folder = Some(dir);
+            }
             if self.draft.clips_folder.is_some() && ui.button("Use default").clicked() {
                 self.draft.clips_folder = None;
             }

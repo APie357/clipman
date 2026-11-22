@@ -74,35 +74,38 @@ impl Timeline {
         let (hs, he) = (self.handle(rect, self.start), self.handle(rect, self.end));
 
         if let Some(pos) = resp.hover_pos()
-            && (hs.expand(4.0).contains(pos) || he.expand(4.0).contains(pos)) {
-                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
-            }
+            && (hs.expand(4.0).contains(pos) || he.expand(4.0).contains(pos))
+        {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+        }
         if (resp.drag_started() || resp.clicked())
-            && let Some(pos) = resp.interact_pointer_pos() {
-                let (in_s, in_e) = (hs.expand(6.0).contains(pos), he.expand(6.0).contains(pos));
-                self.drag = Some(match (in_s, in_e) {
-                    (true, true) => {
-                        if pos.x < hs.center().x {
-                            Drag::Start
-                        } else {
-                            Drag::End
-                        }
+            && let Some(pos) = resp.interact_pointer_pos()
+        {
+            let (in_s, in_e) = (hs.expand(6.0).contains(pos), he.expand(6.0).contains(pos));
+            self.drag = Some(match (in_s, in_e) {
+                (true, true) => {
+                    if pos.x < hs.center().x {
+                        Drag::Start
+                    } else {
+                        Drag::End
                     }
-                    (true, false) => Drag::Start,
-                    (false, true) => Drag::End,
-                    _ => Drag::Seek,
-                });
-            }
-        if let (Some(drag), Some(pos)) = (self.drag, resp.interact_pointer_pos())
-            && (resp.dragged() || resp.drag_started() || resp.clicked()) {
-                let t = self.t(rect, pos.x);
-                match drag {
-                    Drag::Start => self.start = t.min(self.end - MIN_LEN).max(0.0),
-                    Drag::End => self.end = t.max(self.start + MIN_LEN).min(self.duration),
-                    Drag::Seek => ev.seek_to = Some(t),
                 }
-                ev.changed = Some(drag);
+                (true, false) => Drag::Start,
+                (false, true) => Drag::End,
+                _ => Drag::Seek,
+            });
+        }
+        if let (Some(drag), Some(pos)) = (self.drag, resp.interact_pointer_pos())
+            && (resp.dragged() || resp.drag_started() || resp.clicked())
+        {
+            let t = self.t(rect, pos.x);
+            match drag {
+                Drag::Start => self.start = t.min(self.end - MIN_LEN).max(0.0),
+                Drag::End => self.end = t.max(self.start + MIN_LEN).min(self.duration),
+                Drag::Seek => ev.seek_to = Some(t),
             }
+            ev.changed = Some(drag);
+        }
         if resp.drag_stopped() || (resp.clicked() && !resp.dragged()) {
             self.drag = None;
         }

@@ -234,31 +234,14 @@ pub fn settings_path() -> PathBuf {
     config_dir().join("settings.json")
 }
 
-/// Settings from the predecessor scripts (discord-clip-tools), used once on first run.
-fn legacy_settings_path() -> PathBuf {
-    dirs::config_dir()
-        .unwrap_or_default()
-        .join("discord-clip-tools")
-        .join("settings.json")
-}
-
 impl Settings {
     pub fn load() -> Self {
-        let path = settings_path();
-        let from = if path.exists() {
-            path.clone()
-        } else {
-            legacy_settings_path()
-        };
-        let mut s = std::fs::read_to_string(&from)
+        let mut s = std::fs::read_to_string(settings_path())
             .ok()
             .and_then(|t| serde_json::from_str::<Settings>(&t).ok())
             .unwrap_or_default();
         s.denoise_strength = s.denoise_strength.min(100);
         s.presets.retain(|p| !p.id.is_empty());
-        if !path.exists() && from != path && from.exists() {
-            let _ = s.save(); // migrate the old scripts' settings
-        }
         s
     }
 
@@ -372,7 +355,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_old_scripts_json() {
+    fn parses_partial_json() {
         let old = r#"{"denoise_strength": 60, "output_prefix": "x_", "presets": [
             {"id":"primary","type":"compress","name":"","height":720,"fps":60,"max_mb":8.5,"suffix":""},
             {"id":"custom-1","type":"compress","name":"","height":1080,"fps":60,"max_mb":null,"suffix":"_hq"},

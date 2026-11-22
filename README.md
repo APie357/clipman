@@ -63,7 +63,6 @@ Output files are `<prefix><clip name><preset suffix>.mp4` next to the clip (pref
 ## Settings
 
 Stored as JSON in `~/.config/clipman/settings.json` (Windows: `%APPDATA%\clipman\settings.json`).
-On first run, settings from the old `discord-clip-tools` scripts are imported if they exist.
 
 - **Clips folder** for the browser.
 - **Noise suppression strength** 0–100% (blends the original back in; 0% = off).
