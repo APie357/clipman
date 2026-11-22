@@ -26,7 +26,10 @@ Notes for coding agents working on clipman. Read README.md first for what it doe
   retries, CRF 20 when there's no limit, lossless keyframe-aligned trims, the `AudioPlan`
   mix / noise suppression graph, and the RNNoise model download (pinned URL + SHA-256).
 - `src/player.rs`: preview. A video thread decodes rgb24 frames (`-vf scale=…`), paced against
-  a shared wall clock. Audio is the same `AudioPlan` decoded to f32 PCM and played through
+  a shared wall clock. Scrubbing: a background "scrub strip" (256 px, 10 fps, max 600 frames)
+  is shown instantly on seek. The exact frame is decoded only after the playhead rests
+  (`SEEK_SETTLE`), and a newer command cancels the decode. Every command carries a generation
+  number so stale frames are never published. Audio is the same `AudioPlan` decoded to f32 PCM and played through
   rodio. Includes an ignored real-clip test (see Testing).
 - `src/thunar.rs`: generates the Thunar `uca.xml` entries (`clipman-preset-<id>`, `clipman-edit`).
 - `src/ui/`: eframe app. `mod.rs` (screens + CLI render window), `browser.rs`, `editor.rs`,
@@ -57,9 +60,10 @@ Notes for coding agents working on clipman. Read README.md first for what it doe
 - `amix=normalize=0` sums tracks like the recorder's own mix. Don't normalize.
 - The audio Source runs in the audio callback: never block there (it outputs silence when
   starved, and silence until the shared clock starts).
-- Keyboard shortcuts with modifiers: use `consume_key(Modifiers::COMMAND, …)`. Checking
-  `input.modifiers` at frame time misses quick presses, where Ctrl is released within the
-  same frame.
+- Keyboard shortcuts: use `count_and_consume_key`. It uses each event's own modifiers
+  (checking `input.modifiers` at frame time misses quick Ctrl+S presses), counts key-repeats,
+  and consumes the key so a focused button doesn't also react (Space would toggle twice).
+  egui's matching ignores Shift unless asked for, so check `SHIFT+key` **before** the plain key.
 - egui's default fonts lack arrows (→ ←); they render as boxes. ✔ ✖ · – … are fine.
 - In `egui::Grid`, `TextEdit::desired_width` is ignored; use `ui.add_sized`.
 - The editor sizes its window so the video area matches the clip's aspect (`fit_window`,
@@ -70,8 +74,9 @@ Notes for coding agents working on clipman. Read README.md first for what it doe
 
 - `cargo test`: unit tests (settings parsing, naming, audio graphs,
   Thunar XML, time parsing).
-- Real playback: `CLIPMAN_TEST_CLIP=/path/clip.mp4 cargo test --release plays_real_clip -- --ignored --nocapture`
-  (expects ~60 fps of frames and a correct clock; it plays a little audio).
+- Real playback / scrubbing: `CLIPMAN_TEST_CLIP=/path/clip.mp4 cargo test --release -- --ignored --nocapture`
+  (`plays_real_clip`: ~60 fps and a correct clock, and it plays a little audio;
+  `scrubbing_is_fast`: preview frames instant while dragging, exact frame ~160 ms after resting).
 - Renders: copy a clip into a scratch dir and run e.g. `clipman clip.mp4 --preset secondary --start 20 --end 35 --audio 1,2 --denoise 2`
   with `XDG_CONFIG_HOME` / `XDG_CACHE_HOME` pointed at scratch dirs so the user's settings and
   cache aren't touched. `CLIPMAN_DEBUG=1` prints every ffmpeg command and the editor's key events.

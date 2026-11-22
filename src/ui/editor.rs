@@ -370,18 +370,21 @@ impl Editor {
             });
         }
         if !busy && !ctx.wants_keyboard_input() {
-            let (space, i, o, save) = ctx.input(|inp| {
-                (
-                    inp.key_pressed(Key::Space),
-                    inp.key_pressed(Key::I),
-                    inp.key_pressed(Key::O),
-                    false,
-                )
+            // consume the keys so a focused button doesn't also react to them (Space would
+            // otherwise toggle twice), and use each event's own modifiers (a quick Ctrl+S can
+            // release Ctrl before the frame is drawn); counts include key-repeat
+            use egui::Modifiers as M;
+            let (space, i, o, save, step) = ctx.input_mut(|inp| {
+                let mut n = |m, k| inp.count_and_consume_key(m, k) as i32;
+                let space = n(M::NONE, Key::Space) > 0;
+                let (i, o) = (n(M::NONE, Key::I) > 0, n(M::NONE, Key::O) > 0);
+                let save = n(M::COMMAND, Key::S) > 0;
+                // Shift first: egui's matching ignores Shift unless asked for, so the plain
+                // check would also eat Shift+arrow
+                let secs = n(M::SHIFT, Key::ArrowRight) - n(M::SHIFT, Key::ArrowLeft);
+                let frames = n(M::NONE, Key::ArrowRight) - n(M::NONE, Key::ArrowLeft);
+                (space, i, o, save, (frames, secs))
             });
-            // modifiers as recorded on the key event, not the state at frame time
-            // (a quick Ctrl+S can release Ctrl before the frame is drawn)
-            let save =
-                save || ctx.input_mut(|inp| inp.consume_key(egui::Modifiers::COMMAND, Key::S));
             let pos = self.player.position();
             if space {
                 self.toggle(settings, mixer);
@@ -394,6 +397,17 @@ impl Editor {
             }
             if save && self.preset_id.is_some() {
                 self.start_render(settings);
+            }
+            // ←/→ step one frame, Shift+←/→ one second
+            if step != (0, 0) {
+                let frame = 1.0
+                    / if self.info.fps > 1.0 {
+                        self.info.fps
+                    } else {
+                        60.0
+                    };
+                let t = self.player.position() + step.0 as f64 * frame + step.1 as f64;
+                self.seek(t.clamp(0.0, self.info.duration), settings, mixer);
             }
         }
 

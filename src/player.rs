@@ -5,6 +5,7 @@
 use std::io::Read;
 use std::num::NonZero;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -15,20 +16,36 @@ use ffmpeg_sidecar::event::FfmpegEvent;
 use crate::render::{self, AudioPlan};
 
 const SAMPLE_RATE: u32 = 48_000;
+/// Scrub preview strip: small frames decoded in the background so dragging the playhead
+/// shows something instantly; the exact frame follows once the playhead rests.
+const SCRUB_WIDTH: u32 = 256;
+const SCRUB_FPS: f64 = 10.0;
+const SCRUB_MAX_FRAMES: f64 = 600.0; // ~66 MB at 256x144, whatever the clip length
+/// Wait this long for the playhead to settle before decoding the exact frame.
+const SEEK_SETTLE: Duration = Duration::from_millis(40);
 
 /// A decoded preview frame (RGB24).
+#[derive(Clone)]
 pub struct Frame {
     pub width: usize,
     pub height: usize,
     pub rgb: Vec<u8>,
 }
 
+/// Commands carry a generation number; frames from an older generation are dropped, so
+/// a slow decode for an old position can never overwrite a newer one.
 enum VideoCmd {
-    /// Show the frame at this time (paused / scrubbing).
-    Seek(f64),
+    /// Show the exact frame at this time (paused / scrubbing).
+    Seek(f64, u64),
     /// Stream from this time, pacing frames against `clock` (when `t` should be shown).
-    Play(f64, Instant),
+    Play(f64, Instant, u64),
     Stop,
+}
+
+/// Low-res frames every `step` seconds, filled in by a background decode.
+struct ScrubStrip {
+    step: f64,
+    frames: Vec<Frame>,
 }
 
 pub struct Player {
@@ -36,6 +53,10 @@ pub struct Player {
     duration: f64,
     frame: Arc<Mutex<Option<Frame>>>,
     video_tx: Sender<VideoCmd>,
+    generation: Arc<AtomicU64>,
+    strip: Arc<Mutex<ScrubStrip>>,
+    alive: Arc<AtomicBool>,
+    ctx: eframe::egui::Context,
     /// Some((wall-clock start, media time at start)) while playing.
     clock: Option<(Instant, f64)>,
     paused_at: f64,
@@ -50,19 +71,35 @@ impl Player {
         ctx: eframe::egui::Context,
     ) -> Self {
         let frame = Arc::new(Mutex::new(None));
+        let generation = Arc::new(AtomicU64::new(0));
+        let alive = Arc::new(AtomicBool::new(true));
+        let step = (1.0 / SCRUB_FPS).max(duration / SCRUB_MAX_FRAMES);
+        let strip = Arc::new(Mutex::new(ScrubStrip {
+            step,
+            frames: Vec::new(),
+        }));
         let (video_tx, rx) = mpsc::channel();
-        let (f, s) = (frame.clone(), src.clone());
-        std::thread::spawn(move || video_thread(s, preview_width, rx, f, ctx));
-        let p = Self {
+        {
+            let (f, s, g, c) = (frame.clone(), src.clone(), generation.clone(), ctx.clone());
+            std::thread::spawn(move || video_thread(s, preview_width, rx, f, g, c));
+            let (s, st, a) = (src.clone(), strip.clone(), alive.clone());
+            std::thread::spawn(move || strip_thread(s, step, st, a));
+        }
+        let mut p = Self {
             src,
             duration,
             frame,
             video_tx,
+            generation,
+            strip,
+            alive,
+            ctx,
             clock: None,
             paused_at: 0.0,
             audio: None,
         };
-        p.video_tx.send(VideoCmd::Seek(0.0)).ok();
+        let g = p.next_generation();
+        p.video_tx.send(VideoCmd::Seek(0.0, g)).ok();
         p
     }
 
@@ -83,7 +120,8 @@ impl Player {
         // small lead so both ffmpeg processes have started before the clock reaches `t`
         let clock = Instant::now() + Duration::from_millis(150);
         self.clock = Some((clock, t));
-        self.video_tx.send(VideoCmd::Play(t, clock)).ok();
+        let g = self.next_generation();
+        self.video_tx.send(VideoCmd::Play(t, clock, g)).ok();
         if let Some((mixer, plan)) = audio {
             self.audio = AudioStream::start(&self.src, t, plan, mixer, clock);
         }
@@ -113,7 +151,28 @@ impl Player {
             self.play(t, audio);
         } else {
             self.paused_at = t;
-            self.video_tx.send(VideoCmd::Seek(t)).ok();
+            let g = self.next_generation();
+            self.show_strip_frame(t);
+            self.video_tx.send(VideoCmd::Seek(t, g)).ok();
+        }
+    }
+
+    fn next_generation(&mut self) -> u64 {
+        self.generation.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    /// Show the nearest scrub-strip frame right away (the exact frame replaces it).
+    fn show_strip_frame(&self, t: f64) {
+        let Ok(strip) = self.strip.lock() else { return };
+        let i = (t / strip.step).round() as usize;
+        if let Some(f) = strip
+            .frames
+            .get(i.min(strip.frames.len().saturating_sub(1)))
+        {
+            if let Ok(mut slot) = self.frame.lock() {
+                *slot = Some(f.clone());
+            }
+            self.ctx.request_repaint();
         }
     }
 
@@ -131,9 +190,39 @@ impl Player {
 
 impl Drop for Player {
     fn drop(&mut self) {
+        self.alive.store(false, Ordering::Relaxed);
         self.stop_audio();
         self.video_tx.send(VideoCmd::Stop).ok();
     }
+}
+
+/// Decode the scrub strip: a frame every `step` seconds, SCRUB_WIDTH wide.
+fn strip_thread(src: PathBuf, step: f64, strip: Arc<Mutex<ScrubStrip>>, alive: Arc<AtomicBool>) {
+    let mut cmd = render::ffmpeg();
+    cmd.input(&src).map("0:v:0");
+    cmd.args([
+        "-vf",
+        &format!("fps=1/{step:.4},scale={SCRUB_WIDTH}:-2:flags=fast_bilinear"),
+    ]);
+    let Ok(mut child) = cmd.rawvideo().spawn() else {
+        return;
+    };
+    let Ok(iter) = child.iter() else { return };
+    for ev in iter {
+        if !alive.load(Ordering::Relaxed) {
+            break;
+        }
+        if let FfmpegEvent::OutputFrame(f) = ev {
+            if let Ok(mut s) = strip.lock() {
+                s.frames.push(Frame {
+                    width: f.width as usize,
+                    height: f.height as usize,
+                    rgb: f.data,
+                });
+            }
+        }
+    }
+    kill(child);
 }
 
 fn video_cmd(src: &PathBuf, t: f64, width: u32) -> ffmpeg_sidecar::command::FfmpegCommand {
@@ -153,9 +242,13 @@ fn video_thread(
     width: u32,
     rx: Receiver<VideoCmd>,
     out: Arc<Mutex<Option<Frame>>>,
+    generation: Arc<AtomicU64>,
     ctx: eframe::egui::Context,
 ) {
-    let publish = |f: ffmpeg_sidecar::event::OutputVideoFrame| {
+    let publish = |f: ffmpeg_sidecar::event::OutputVideoFrame, g: u64| {
+        if generation.load(Ordering::SeqCst) != g {
+            return; // a newer seek/play superseded this one
+        }
         if let Ok(mut slot) = out.lock() {
             *slot = Some(Frame {
                 width: f.width as usize,
@@ -180,20 +273,34 @@ fn video_thread(
         }
         match cmd {
             VideoCmd::Stop => {}
-            VideoCmd::Seek(t) => {
+            VideoCmd::Seek(t, g) => {
+                // let the playhead settle (the scrub strip covers the meantime)
+                match rx.recv_timeout(SEEK_SETTLE) {
+                    Ok(c) => {
+                        pending = Some(c);
+                        continue;
+                    }
+                    Err(RecvTimeoutError::Disconnected) => return,
+                    Err(RecvTimeoutError::Timeout) => {}
+                }
                 let Ok(mut child) = video_cmd(&src, t, width).frames(1).rawvideo().spawn() else {
                     continue;
                 };
                 let Ok(iter) = child.iter() else { continue };
                 for ev in iter {
+                    // a newer request cancels this decode
+                    if let Ok(c) = rx.try_recv() {
+                        pending = Some(c);
+                        break;
+                    }
                     if let FfmpegEvent::OutputFrame(f) = ev {
-                        publish(f);
+                        publish(f, g);
                         break;
                     }
                 }
                 kill(child);
             }
-            VideoCmd::Play(t, clock) => {
+            VideoCmd::Play(t, clock, g) => {
                 let Ok(mut child) = video_cmd(&src, t, width).rawvideo().spawn() else {
                     continue;
                 };
@@ -221,7 +328,7 @@ fn video_thread(
                     } else if now - due > Duration::from_millis(80) {
                         continue; // running late: drop this frame
                     }
-                    publish(f);
+                    publish(f, g);
                 }
                 kill(child);
             }
@@ -354,6 +461,53 @@ pub fn open_audio() -> Option<rodio::MixerDeviceSink> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Scrub latency on a real clip: `CLIPMAN_TEST_CLIP=clip.mp4 cargo test -- --ignored`
+    #[test]
+    #[ignore]
+    fn scrubbing_is_fast() {
+        let clip =
+            PathBuf::from(std::env::var("CLIPMAN_TEST_CLIP").expect("set CLIPMAN_TEST_CLIP"));
+        let info = crate::media::probe(&clip).unwrap();
+        let mut p = Player::new(clip, info.duration, 1280, eframe::egui::Context::default());
+        let wait_frame = |p: &Player, max_ms: u64| -> Option<(Duration, usize)> {
+            let t0 = Instant::now();
+            while t0.elapsed() < Duration::from_millis(max_ms) {
+                if let Some(f) = p.take_frame() {
+                    return Some((t0.elapsed(), f.width));
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            None
+        };
+        wait_frame(&p, 3000).expect("first frame");
+        // before the strip exists: exact frame only
+        p.seek(31.9, None);
+        eprintln!("cold seek, exact frame: {:?}", wait_frame(&p, 3000));
+        let t0 = Instant::now();
+        while p.strip.lock().unwrap().frames.len() < (info.duration * SCRUB_FPS) as usize - 2 {
+            assert!(t0.elapsed() < Duration::from_secs(30), "strip too slow");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        eprintln!(
+            "scrub strip ready after {:.1}s: {} frames",
+            t0.elapsed().as_secs_f64(),
+            p.strip.lock().unwrap().frames.len()
+        );
+        // simulate a drag: 30 positions at 60 Hz, then rest
+        for k in 0..30 {
+            p.seek(10.0 + k as f64 * 0.5, None);
+            let (lat, w) = wait_frame(&p, 100).expect("no preview during drag");
+            assert!(
+                lat < Duration::from_millis(5) && w == SCRUB_WIDTH as usize,
+                "drag frame {lat:?} {w}"
+            );
+            std::thread::sleep(Duration::from_millis(16));
+        }
+        let (lat, w) = wait_frame(&p, 2000).expect("exact frame after drag");
+        eprintln!("drag: preview frames instant; exact {w}px frame {lat:?} after the last move");
+        assert_eq!(w, 1280);
+    }
 
     /// Plays a real clip for 2 s: `CLIPMAN_TEST_CLIP=clip.mp4 cargo test -- --ignored`
     #[test]
