@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Clipman
+GenericName=Clip editor
+Comment=Browse, trim and compress game clips
+Exec=@EXE@ %f
+Icon=video-x-generic
+Terminal=false
+Categories=AudioVideo;Video;AudioVideoEditing;
+MimeType=video/mp4;video/x-matroska;video/quicktime;video/webm;
+StartupWMClass=clipman

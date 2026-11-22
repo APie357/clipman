@@ -1,0 +1,36 @@
+[package]
+name = "clipman"
+version = "0.1.0"
+edition = "2024"
+description = "Native clip browser, trimmer and compressor for game clips"
+license = "Apache-2.0"
+
+[dependencies]
+anyhow = "1.0.104"
+clap = { version = "4.6.9", features = ["derive"] }
+dirs = "7.0.0"
+eframe = { version = "0.33.3", default-features = false, features = ["default_fonts", "glow", "wayland", "x11", "accesskit"] }
+# typed ffmpeg command builder + progress/frame event stream; downloads ffmpeg on
+# Windows when it isn't installed
+ffmpeg-sidecar = { version = "2.7.0", default-features = false }
+image = { version = "0.25.10", default-features = false, features = ["jpeg"] }
+indexmap = { version = "2.14.2", features = ["serde"] }
+rfd = "0.17.2"
+rodio = { version = "0.23.0", default-features = false, features = ["playback"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+sha2 = "0.11.1"
+ureq = { version = "3.5.2", optional = true }
+
+[features]
+default = ["download"]
+# Download ffmpeg when it's missing (Windows/macOS) and the RNNoise model. Pulls in a
+# TLS stack; `--no-default-features` builds without it.
+download = ["dep:ureq", "ffmpeg-sidecar/download_ffmpeg"]
+
+[profile.release]
+lto = "thin"
+strip = true
+
+[target."cfg(windows)".dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_System_Console"] }

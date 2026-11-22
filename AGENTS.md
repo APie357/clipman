@@ -1,0 +1,86 @@
+# AGENTS.md
+
+Notes for coding agents working on clipman. Read README.md first for what it does.
+
+This is a Rust port of the user's earlier Python scripts (the private `discord-clip-tools`
+repo). **Requirements the user set:**
+
+- **One binary** with args. Don't split it into several executables.
+- **Native UI only.** No web views, Electron or Tauri; the user finds web apps slow and bloated.
+- **ffmpeg through the ffmpeg-sidecar wrapper** (typed builder + event stream), not
+  hand-assembled shell strings.
+- Render progress in the **editor's own window**; no external progress popups (no zenity).
+- **Cross-platform, Windows planned.** Keep platform-specific bits behind `cfg`.
+- The user handles removing the old scripts' Thunar entries (`discord-*` ids). Don't touch them.
+
+## Layout
+
+- `src/main.rs`: CLI (clap) and routing. `clipman` opens the browser, `clipman FILE` the
+  editor, and `FILE --render-option` renders (terminal progress when stderr is a TTY or with
+  `--no-window`, otherwise the GUI progress window). Paths are made absolute here; see below.
+- `src/settings.rs`: the JSON settings. Its schema is compatible with the old scripts'
+  settings.json, which is imported on first run. `Preset` (`type` compress|original, blank
+  name shows as `<h>p<fps>`, `max_mb` None = no limit), `TrackCfg` keyed by the stream's
+  name tag, `output_path()` (single naming scheme, never overwrites, no stacked prefix).
+- `src/media.rs`: ffprobe (duration, size, fps, audio name tags, keyframes), `ensure_ffmpeg()`
+  (auto-download via ffmpeg-sidecar), and `quiet_command()` (no console window on Windows).
+- `src/render.rs`: `render(job, progress, cancel)`. Two-pass x264 to `max_mb × 0.97` with
+  retries, CRF 20 when there's no limit, lossless keyframe-aligned trims, the `AudioPlan`
+  mix / noise suppression graph, and the RNNoise model download (pinned URL + SHA-256).
+- `src/player.rs`: preview. A video thread decodes rgb24 frames (`-vf scale=…`), paced against
+  a shared wall clock. Audio is the same `AudioPlan` decoded to f32 PCM and played through
+  rodio. Includes an ignored real-clip test (see Testing).
+- `src/thunar.rs`: generates the Thunar `uca.xml` entries (`clipman-preset-<id>`, `clipman-edit`).
+- `src/ui/`: eframe app. `mod.rs` (screens + CLI render window), `browser.rs`, `editor.rs`,
+  `settings.rs` (modal dialog), `timeline.rs` (custom range widget).
+- `scripts/install.sh`: Linux installer. `--hyprland` / `--gsr` are opt-in. `extras/` holds
+  the Hyprland rule, the desktop entry and the GSR config snapshot (`@HOME@` placeholders).
+
+## Gotchas (all hit during the port)
+
+- **ffmpeg runs with the cache dir as its working directory**, so `arnndn=m=lq.rnnn` needs
+  no filter-graph escaping (Windows paths like `C:\…` would need it). Consequence: every
+  input/output path must be absolute (`std::path::absolute`, not `canonicalize`, which gives
+  `\\?\` paths on Windows). `main.rs` and `render()` both do this.
+- ffmpeg-sidecar's `.filter()` emits a bare `-filter`, which applies to **all** output
+  streams and breaks audio. Use `.args(["-vf", …])` for video filters.
+- ffmpeg-sidecar asserts that stdin/stdout/stderr are all piped (it panics otherwise). For raw
+  PCM, use `pipe_stdout()` + `take_stdout()` and drain stderr in a thread.
+- `arnndn` sometimes emits NaN / huge samples (mostly in its end-of-stream flush). The `aeval`
+  step after it zeroes them; without it AAC fails with "Input contains (near) NaN/+-Inf".
+  Don't clamp instead: that turns the spikes into clicks.
+- `amix=normalize=0` sums tracks like the recorder's own mix. Don't normalize.
+- The audio Source runs in the audio callback: never block there (it outputs silence when
+  starved, and silence until the shared clock starts).
+- Keyboard shortcuts with modifiers: use `consume_key(Modifiers::COMMAND, …)`. Checking
+  `input.modifiers` at frame time misses quick presses, where Ctrl is released within the
+  same frame.
+- egui's default fonts lack arrows (→ ←); they render as boxes. ✔ ✖ · – … are fine.
+- In `egui::Grid`, `TextEdit::desired_width` is ignored; use `ui.add_sized`.
+- The editor sizes its window so the video area matches the clip's aspect (`fit_window`,
+  first few frames). Don't put a `size` in the Hyprland rule.
+- Hyprland is configured in **Lua** (`hl.window_rule{…}`); the window class / app_id is `clipman`.
+
+## Testing
+
+- `cargo test`: unit tests (settings parsing incl. the old JSON, naming, audio graphs,
+  Thunar XML, time parsing).
+- Real playback: `CLIPMAN_TEST_CLIP=/path/clip.mp4 cargo test --release plays_real_clip -- --ignored --nocapture`
+  (expects ~60 fps of frames and a correct clock; it plays a little audio).
+- Renders: copy a clip into a scratch dir and run e.g. `clipman clip.mp4 --preset secondary --start 20 --end 35 --audio 1,2 --denoise 2`
+  with `XDG_CONFIG_HOME` / `XDG_CACHE_HOME` pointed at scratch dirs so the user's settings and
+  cache aren't touched. `CLIPMAN_DEBUG=1` prints every ffmpeg command and the editor's key events.
+  Never write test output into `~/Videos`.
+- Driving the GUI on Hyprland: `hyprctl dispatch "hl.dsp.send_shortcut({ mods = 'CTRL', key = 's', window = 'pid:N' })"`
+  sends keys. `hyprctl eval 'hl.window_rule{…}'` adds a temporary rule (gone after
+  `hyprctl reload`). `grim -g "x,y wxh"` takes screenshots. Don't `pkill -f clipman` from a
+  shell whose own command line contains "clipman"; it kills that shell.
+- Windows compile check from Linux: `cargo check --target x86_64-pc-windows-gnu --no-default-features`
+  (the `download` feature's TLS crate needs MinGW headers to cross-compile; native Windows
+  builds are fine).
+
+## Environment
+
+Arch Linux, Hyprland (Lua config), Thunar, GPU Screen Recorder (replay buffer, clips in
+`~/Videos` named `Replay_<date>_<time>.mp4`). Python tooling, if ever needed: plain venv + pip,
+not uv.
