@@ -1,0 +1,85 @@
+# SPDX-License-Identifier: Apache-2.0
+# Builds and tests clipman for Linux (binary + AppImage) and Windows on every push to
+# main and on pull requests. Pushing a tag like v0.2.0 also publishes a GitHub release
+# with those files attached.
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux:
+    # the oldest supported Ubuntu: an AppImage needs a glibc at least as new as the
+    # machine it was built on, so building on an older one makes it run on more distros
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libasound2-dev file
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Test
+        run: cargo test --release --locked
+      - name: AppImage
+        run: scripts/build-appimage.sh
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp target/appimage/*.AppImage dist/
+          tar -C target/release -czf dist/clipman-linux-x86_64.tar.gz clipman
+          ls -la dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: clipman-linux
+          path: dist/*
+          if-no-files-found: error
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Test
+        run: cargo test --release --locked
+      - name: Build
+        run: cargo build --release --locked
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Compress-Archive -Path target/release/clipman.exe, README.md, LICENSE -DestinationPath dist/clipman-windows-x86_64.zip
+          Get-ChildItem dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: clipman-windows
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [linux, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

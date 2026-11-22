@@ -120,9 +120,18 @@ clipman --write-thunar        # per user, if you want the Thunar right-click ent
 
 The package puts the Hyprland rule and the GSR config in `/usr/share/clipman/`.
 
+**AppImage:** `scripts/build-appimage.sh` builds `target/appimage/Clipman-<version>-x86_64.AppImage`
+(it downloads [linuxdeploy](https://github.com/linuxdeploy/linuxdeploy) into `target/tools` on
+first run). ffmpeg isn't bundled: the AppImage uses the system's, or downloads one on first run.
+
 **Windows:** `cargo build --release` gives `target\release\clipman.exe`. It runs without a
 console window and still prints to the terminal when started from one. Thunar integration
 is Linux-only; an Explorer context menu isn't implemented yet.
+
+**CI:** `.github/workflows/build.yml` tests and builds on every push to `main` and on pull
+requests: a Linux binary and AppImage (built on Ubuntu 22.04 so they run on older distros too)
+and a Windows `.exe` (zipped), uploaded as workflow artifacts. Pushing a `v*` tag (e.g.
+`git tag v0.2.0 && git push --tags`) also publishes them as a GitHub release.
 
 Without network access, build with `--no-default-features`; ffmpeg and the noise model then
 have to be installed by hand.
