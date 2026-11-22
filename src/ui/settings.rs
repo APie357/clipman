@@ -28,6 +28,14 @@ pub struct SettingsUi {
     settings_check_updates: bool,
     message: Option<String>,
     offer_thunar_restart: bool,
+    /// A folder picker that's open (on its own thread) and which setting it's for.
+    picker: Option<(Folder, super::PendingDialog)>,
+}
+
+#[derive(Clone, Copy)]
+enum Folder {
+    Clips,
+    Exports,
 }
 
 const ENCODER_CHOICES: [(Encoder, &str, &str); 3] = [
@@ -85,6 +93,7 @@ impl SettingsUi {
             applied: false,
             message: None,
             offer_thunar_restart: false,
+            picker: None,
         }
     }
 
@@ -161,7 +170,26 @@ impl SettingsUi {
     }
 
     /// Draw the dialog. Returns Some when it's closed.
+    fn pick_folder(&mut self, ctx: &egui::Context, which: Folder, start: std::path::PathBuf) {
+        if self.picker.is_none() {
+            let d = super::PendingDialog::spawn(ctx, move || {
+                rfd::FileDialog::new().set_directory(start).pick_folder()
+            });
+            self.picker = Some((which, d));
+        }
+    }
+
     pub fn show(&mut self, ctx: &egui::Context) -> Option<Outcome> {
+        if let Some(result) = self.picker.as_ref().and_then(|(_, d)| d.poll()) {
+            let which = self.picker.take().map(|(w, _)| w);
+            match (which, result) {
+                (Some(Folder::Clips), Some(dir)) => self.draft.clips_folder = Some(dir),
+                (Some(Folder::Exports), Some(dir)) => self.draft.export_folder = Some(dir),
+                _ => {}
+            }
+        } else if self.picker.is_some() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
         let mut outcome = None;
         egui::Modal::new(egui::Id::new("settings")).show(ctx, |ui| {
             ui.set_width(860.0_f32.min(ctx.content_rect().width() - 40.0));
@@ -218,12 +246,11 @@ impl SettingsUi {
         ui.label(RichText::new("Clips folder").strong());
         ui.horizontal(|ui| {
             ui.label(self.draft.clips_folder().display().to_string());
-            if ui.button("Choose…").clicked()
-                && let Some(dir) = rfd::FileDialog::new()
-                    .set_directory(self.draft.clips_folder())
-                    .pick_folder()
+            if ui
+                .add_enabled(self.picker.is_none(), egui::Button::new("Choose…"))
+                .clicked()
             {
-                self.draft.clips_folder = Some(dir);
+                self.pick_folder(ui.ctx(), Folder::Clips, self.draft.clips_folder());
             }
             if self.draft.clips_folder.is_some() && ui.button("Use default").clicked() {
                 self.draft.clips_folder = None;
@@ -236,16 +263,17 @@ impl SettingsUi {
         ui.horizontal(|ui| {
             let folder = self.draft.export_folder();
             ui.label(folder.display().to_string());
-            if ui.button("Choose…").clicked() {
+            if ui
+                .add_enabled(self.picker.is_none(), egui::Button::new("Choose…"))
+                .clicked()
+            {
                 // the picker needs an existing folder to start in
                 let start = if folder.is_dir() {
                     folder
                 } else {
                     self.draft.clips_folder()
                 };
-                if let Some(dir) = rfd::FileDialog::new().set_directory(start).pick_folder() {
-                    self.draft.export_folder = Some(dir);
-                }
+                self.pick_folder(ui.ctx(), Folder::Exports, start);
             }
             if self.draft.export_folder.is_some() && ui.button("Use default").clicked() {
                 self.draft.export_folder = None;

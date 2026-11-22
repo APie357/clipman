@@ -23,9 +23,8 @@ pub enum Action {
     None,
     /// Go back to the clip browser (if we came from it).
     Back,
-    /// Rendering finished: close (standalone) or go back to the browser.
-    Saved,
-    OpenSettings,
+    /// Export finished: close (standalone) or go back to the browser.
+    Exported,
 }
 
 enum RenderMsg {
@@ -191,19 +190,48 @@ impl Editor {
         self.player.seek(t, mixer.map(|m| (m, &plan)));
     }
 
-    fn start_render(&mut self, settings: &Settings) {
-        let Some(preset) = self
-            .preset_id
-            .as_deref()
-            .and_then(|id| settings.preset(id))
-            .cloned()
-        else {
+    fn preset<'a>(&self, settings: &'a Settings) -> Option<&'a crate::settings::Preset> {
+        self.preset_id.as_deref().and_then(|id| settings.preset(id))
+    }
+
+    /// Whether Export / Export As can start (a preset is chosen and nothing's rendering).
+    pub fn can_export(&self, settings: &Settings) -> bool {
+        self.render.is_none() && self.preset(settings).is_some()
+    }
+
+    pub fn is_exporting(&self) -> bool {
+        self.render.is_some()
+    }
+
+    /// Where Export would save (the export folder, named after the clip and preset).
+    pub fn default_export_path(&self, settings: &Settings) -> Option<PathBuf> {
+        let p = self.preset(settings)?;
+        Some(settings.output_path(&self.path, &p.suffix))
+    }
+
+    pub fn pause(&mut self) {
+        self.player.pause();
+    }
+
+    /// Export with the chosen preset to `dst`, or to the export folder when None.
+    pub fn export(&mut self, settings: &Settings, dst: Option<PathBuf>) {
+        if !self.can_export(settings) {
+            return;
+        }
+        let Some(preset) = self.preset(settings).cloned() else {
             return;
         };
+        let abs = |p: &std::path::Path| std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf());
+        if let Some(d) = &dst
+            && abs(d) == abs(&self.path)
+        {
+            self.status = "Can\u{2019}t export over the original clip: pick another name.".into();
+            return;
+        }
         self.player.pause();
         let job = Job {
             src: self.path.clone(),
-            dst: settings.output_path(&self.path, &preset.suffix),
+            dst: dst.unwrap_or_else(|| settings.output_path(&self.path, &preset.suffix)),
             preset,
             start: Some(self.timeline.start),
             end: Some(self.timeline.end),
@@ -324,12 +352,12 @@ impl Editor {
             if let Some(r) = done {
                 self.render = None;
                 match r {
-                    Ok(_) => return Action::Saved,
+                    Ok(_) => return Action::Exported,
                     Err(e) => {
                         self.status = if e == "Cancelled" {
                             "Cancelled.".into()
                         } else {
-                            format!("Save failed: {e}")
+                            format!("Export failed: {e}")
                         }
                     }
                 }
@@ -377,16 +405,15 @@ impl Editor {
             // otherwise toggle twice), and use each event's own modifiers (a quick Ctrl+S can
             // release Ctrl before the frame is drawn); counts include key-repeat
             use egui::Modifiers as M;
-            let (space, i, o, save, step) = ctx.input_mut(|inp| {
+            let (space, i, o, step) = ctx.input_mut(|inp| {
                 let mut n = |m, k| inp.count_and_consume_key(m, k) as i32;
                 let space = n(M::NONE, Key::Space) > 0;
                 let (i, o) = (n(M::NONE, Key::I) > 0, n(M::NONE, Key::O) > 0);
-                let save = n(M::COMMAND, Key::S) > 0;
                 // Shift first: egui's matching ignores Shift unless asked for, so the plain
                 // check would also eat Shift+arrow
                 let secs = n(M::SHIFT, Key::ArrowRight) - n(M::SHIFT, Key::ArrowLeft);
                 let frames = n(M::NONE, Key::ArrowRight) - n(M::NONE, Key::ArrowLeft);
-                (space, i, o, save, (frames, secs))
+                (space, i, o, (frames, secs))
             });
             let pos = self.player.position();
             if space {
@@ -397,9 +424,6 @@ impl Editor {
             }
             if o && pos > self.timeline.start + super::timeline::MIN_LEN {
                 self.timeline.end = pos;
-            }
-            if save && self.preset_id.is_some() {
-                self.start_render(settings);
             }
             // ←/→ step one frame (to the real neighbouring frame), Shift+←/→ one second
             if step.1 != 0 {
@@ -430,18 +454,18 @@ impl Editor {
                         fmt_time(self.info.duration)
                     ));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let can_save = self.preset_id.is_some();
                         if ui
-                            .add_enabled(can_save, egui::Button::new("Save"))
+                            .add_enabled(self.can_export(settings), egui::Button::new("Export"))
+                            .on_hover_text(format!(
+                                "Export to {} (Ctrl+E). To pick the place: File, Export As\u{2026}",
+                                settings.export_folder().display()
+                            ))
                             .clicked()
                         {
-                            self.start_render(settings);
+                            self.export(settings, None);
                         }
                         self.preset_combo(ui, settings);
                         self.audio_menu(ui, settings, mixer);
-                        if ui.button("Settings").clicked() {
-                            action = Action::OpenSettings;
-                        }
                     });
                 });
             });

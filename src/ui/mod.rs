@@ -31,6 +31,68 @@ fn apply_style(ctx: &egui::Context) {
     });
 }
 
+/// Commands from the menu bar (or their keyboard shortcuts).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum MenuCmd {
+    Open,
+    Export,
+    ExportAs,
+    OpenExportFolder,
+    Back,
+    Settings,
+    Quit,
+}
+
+const SC_OPEN: egui::KeyboardShortcut =
+    egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::O);
+const SC_EXPORT: egui::KeyboardShortcut =
+    egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::E);
+const SC_EXPORT_AS: egui::KeyboardShortcut = egui::KeyboardShortcut::new(
+    egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT),
+    egui::Key::E,
+);
+const SC_SETTINGS: egui::KeyboardShortcut =
+    egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::Comma);
+const SC_QUIT: egui::KeyboardShortcut =
+    egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::Q);
+
+/// A native file dialog running on its own thread. Calling it on the UI thread blocks
+/// drawing until it closes, and compositors then report the app as not responding.
+pub struct PendingDialog(Receiver<Option<PathBuf>>);
+
+impl PendingDialog {
+    pub fn spawn(
+        ctx: &egui::Context,
+        dialog: impl FnOnce() -> Option<PathBuf> + Send + 'static,
+    ) -> Self {
+        let (tx, rx) = mpsc::channel();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(dialog());
+            ctx.request_repaint();
+        });
+        Self(rx)
+    }
+
+    /// Some(the chosen path, or None if cancelled) once the dialog has closed.
+    pub fn poll(&self) -> Option<Option<PathBuf>> {
+        match self.0.try_recv() {
+            Ok(r) => Some(r),
+            Err(mpsc::TryRecvError::Disconnected) => Some(None),
+            Err(mpsc::TryRecvError::Empty) => None,
+        }
+    }
+}
+
+/// Which menu dialog is open.
+enum MenuDialog {
+    Open,
+    ExportAs,
+}
+
+/// Video files the Open dialog offers (same as the clip browser).
+pub const VIDEO_EXTENSIONS: [&str; 4] = ["mp4", "mkv", "mov", "webm"];
+
 pub enum Start {
     Browser,
     Editor(PathBuf),
@@ -54,6 +116,8 @@ pub struct App {
     settings_ui: Option<SettingsUi>,
     audio: Option<rodio::MixerDeviceSink>,
     audio_tried: bool,
+    /// An Open / Export As dialog that's open.
+    dialog: Option<(MenuDialog, PendingDialog)>,
 }
 
 pub fn initial_size(start: &Start) -> Vec2 {
@@ -114,6 +178,7 @@ impl App {
             settings_ui: None,
             audio: None,
             audio_tried: false,
+            dialog: None,
         };
         if !matches!(start, Start::Render(_)) {
             crate::update::start(app.settings.check_updates);
@@ -157,6 +222,209 @@ impl App {
         }
     }
 
+    /// The File / Help menu bar shown above the browser and the editor.
+    fn menu_bar(&self, ctx: &egui::Context) -> Option<MenuCmd> {
+        let editor = match &self.screen {
+            Screen::Editor(ed) => Some(ed),
+            _ => None,
+        };
+        // nothing that changes the clip while an export or a file dialog is running
+        let busy = editor.is_some_and(|e| e.is_exporting()) || self.dialog.is_some();
+        let can_export = !busy && editor.is_some_and(|e| e.can_export(&self.settings));
+        let mut cmd = None;
+        egui::TopBottomPanel::top("menu").show(ctx, |ui| {
+            egui::MenuBar::new().ui(ui, |ui| {
+                let item = |ui: &mut egui::Ui, enabled: bool, text: &str, sc: Option<egui::KeyboardShortcut>| {
+                    let mut b = egui::Button::new(text);
+                    if let Some(sc) = sc {
+                        // "Ctrl+Comma" reads better as "Ctrl+,"
+                        b = b.shortcut_text(ui.ctx().format_shortcut(&sc).replace("Comma", ","));
+                    }
+                    ui.add_enabled(enabled, b).clicked()
+                };
+                ui.menu_button("File", |ui| {
+                    if item(ui, !busy, "Open clip\u{2026}", Some(SC_OPEN)) {
+                        cmd = Some(MenuCmd::Open);
+                    }
+                    if editor.is_some() {
+                        ui.separator();
+                        if item(ui, can_export, "Export", Some(SC_EXPORT)) {
+                            cmd = Some(MenuCmd::Export);
+                        }
+                        if item(ui, can_export, "Export As\u{2026}", Some(SC_EXPORT_AS)) {
+                            cmd = Some(MenuCmd::ExportAs);
+                        }
+                    }
+                    if item(ui, true, "Open export folder", None) {
+                        cmd = Some(MenuCmd::OpenExportFolder);
+                    }
+                    if editor.is_some_and(|e| e.from_browser) {
+                        ui.separator();
+                        if item(ui, !busy, "Back to clip browser", None) {
+                            cmd = Some(MenuCmd::Back);
+                        }
+                    }
+                    ui.separator();
+                    if item(ui, true, "Settings\u{2026}", Some(SC_SETTINGS)) {
+                        cmd = Some(MenuCmd::Settings);
+                    }
+                    ui.separator();
+                    if item(ui, true, "Quit", Some(SC_QUIT)) {
+                        cmd = Some(MenuCmd::Quit);
+                    }
+                });
+                ui.menu_button("Help", |ui| {
+                    ui.label(format!("Clipman {}", crate::update::CURRENT));
+                    if let crate::update::Status::Available(r) = crate::update::status() {
+                        ui.hyperlink_to(format!("Clipman {} is available", r.version), &r.url);
+                    }
+                    ui.hyperlink_to(
+                        "Project page",
+                        format!("https://github.com/{}", crate::update::REPO),
+                    );
+                });
+            });
+        });
+        cmd
+    }
+
+    /// Menu shortcuts, checked every frame (also when the menu is closed).
+    fn menu_shortcuts(&self, ctx: &egui::Context) -> Option<MenuCmd> {
+        if self.settings_ui.is_some() || self.dialog.is_some() {
+            return None; // a dialog has the keyboard
+        }
+        use egui::{Key, Modifiers as M};
+        ctx.input_mut(|inp| {
+            // each event's own modifiers (a quick Ctrl+E can release Ctrl before the frame
+            // is drawn); Shift first, since the plain Ctrl+E check would also match it
+            let mut n = |m, k| inp.count_and_consume_key(m, k) > 0;
+            if n(M::COMMAND | M::SHIFT, Key::E) {
+                Some(MenuCmd::ExportAs)
+            } else if n(M::COMMAND, Key::E) || n(M::COMMAND, Key::S) {
+                Some(MenuCmd::Export) // Ctrl+S: what Save used to be
+            } else if n(M::COMMAND, Key::O) {
+                Some(MenuCmd::Open)
+            } else if n(M::COMMAND, Key::Comma) {
+                Some(MenuCmd::Settings)
+            } else if n(M::COMMAND, Key::Q) {
+                Some(MenuCmd::Quit)
+            } else {
+                None
+            }
+        })
+    }
+
+    fn run_menu(&mut self, cmd: MenuCmd, ctx: &egui::Context) {
+        match cmd {
+            MenuCmd::Open => {
+                if matches!(&self.screen, Screen::Editor(ed) if ed.is_exporting()) {
+                    return;
+                }
+                if self.dialog.is_some() {
+                    return;
+                }
+                if let Screen::Editor(ed) = &mut self.screen {
+                    ed.pause();
+                }
+                let dir = self.settings.clips_folder();
+                let d = PendingDialog::spawn(ctx, move || {
+                    rfd::FileDialog::new()
+                        .set_title("Open clip")
+                        .set_directory(dir)
+                        .add_filter("Video", &VIDEO_EXTENSIONS)
+                        .pick_file()
+                });
+                self.dialog = Some((MenuDialog::Open, d));
+            }
+            MenuCmd::Export => {
+                if let Screen::Editor(ed) = &mut self.screen {
+                    ed.export(&self.settings, None);
+                }
+            }
+            MenuCmd::ExportAs => {
+                let Screen::Editor(ed) = &mut self.screen else {
+                    return;
+                };
+                let Some(default) = ed.default_export_path(&self.settings) else {
+                    return;
+                };
+                if self.dialog.is_some() || !ed.can_export(&self.settings) {
+                    return;
+                }
+                ed.pause();
+                // start in the export folder (the picker needs it to exist)
+                let mut dir = default.parent().map(PathBuf::from).unwrap_or_default();
+                if std::fs::create_dir_all(&dir).is_err() {
+                    dir = self.settings.clips_folder();
+                }
+                let name = default.file_name().unwrap_or_default().to_string_lossy().into_owned();
+                let d = PendingDialog::spawn(ctx, move || {
+                    rfd::FileDialog::new()
+                        .set_title("Export as")
+                        .set_directory(dir)
+                        .set_file_name(name)
+                        .add_filter("MP4 video", &["mp4"])
+                        .save_file()
+                });
+                self.dialog = Some((MenuDialog::ExportAs, d));
+            }
+            MenuCmd::OpenExportFolder => {
+                let dir = self.settings.export_folder();
+                let _ = std::fs::create_dir_all(&dir);
+                open_folder(&dir);
+            }
+            MenuCmd::Back => {
+                if let Screen::Editor(ed) = &mut self.screen
+                    && !ed.is_exporting()
+                {
+                    ed.stop();
+                    self.back_to_browser(ctx);
+                }
+            }
+            MenuCmd::Settings => {
+                if self.settings_ui.is_none() {
+                    let tracks = match &self.screen {
+                        Screen::Editor(ed) => ed.track_names().to_vec(),
+                        _ => Vec::new(),
+                    };
+                    self.settings_ui = Some(SettingsUi::new(&self.settings, &tracks));
+                }
+            }
+            MenuCmd::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+        }
+    }
+
+    /// Act on an Open / Export As dialog once it has closed.
+    fn poll_dialog(&mut self, ctx: &egui::Context) {
+        let Some(result) = self.dialog.as_ref().and_then(|(_, d)| d.poll()) else {
+            if self.dialog.is_some() {
+                ctx.request_repaint_after(std::time::Duration::from_millis(100));
+            }
+            return;
+        };
+        let Some((kind, _)) = self.dialog.take() else {
+            return;
+        };
+        let Some(path) = result else { return }; // cancelled
+        match kind {
+            MenuDialog::Open => {
+                let from_browser = match &mut self.screen {
+                    Screen::Editor(ed) => {
+                        ed.stop();
+                        ed.from_browser
+                    }
+                    _ => self.browser.is_some(),
+                };
+                self.screen = self.open_editor(path, ctx, from_browser);
+            }
+            MenuDialog::ExportAs => {
+                if let Screen::Editor(ed) = &mut self.screen {
+                    ed.export(&self.settings, Some(with_mp4_extension(path)));
+                }
+            }
+        }
+    }
+
     fn back_to_browser(&mut self, ctx: &egui::Context) {
         let b = self
             .browser
@@ -190,6 +458,15 @@ impl eframe::App for App {
             }
         }
 
+        self.poll_dialog(ctx);
+        // menu bar (and its shortcuts) over the browser and the editor
+        if matches!(self.screen, Screen::Browser | Screen::Editor(_) | Screen::Error(_)) {
+            let shortcut = self.menu_shortcuts(ctx);
+            if let Some(cmd) = self.menu_bar(ctx).or(shortcut) {
+                self.run_menu(cmd, ctx);
+            }
+        }
+
         match &mut self.screen {
             Screen::Browser => {
                 let action = self
@@ -199,9 +476,6 @@ impl eframe::App for App {
                     .unwrap_or(browser::Action::None);
                 match action {
                     browser::Action::Open(p) => self.screen = self.open_editor(p, ctx, true),
-                    browser::Action::OpenSettings => {
-                        self.settings_ui = Some(SettingsUi::new(&self.settings, &[]))
-                    }
                     browser::Action::None => {}
                 }
             }
@@ -214,14 +488,11 @@ impl eframe::App for App {
                 };
                 match ed.ui(ctx, &settings, mixer) {
                     editor::Action::None => {}
-                    editor::Action::OpenSettings => {
-                        self.settings_ui = Some(SettingsUi::new(&self.settings, ed.track_names()));
-                    }
                     editor::Action::Back => {
                         ed.stop();
                         self.back_to_browser(ctx);
                     }
-                    editor::Action::Saved => {
+                    editor::Action::Exported => {
                         ed.stop();
                         if ed.from_browser {
                             self.back_to_browser(ctx);
@@ -387,5 +658,44 @@ impl RenderWindow {
             }
         });
         close
+    }
+}
+
+/// `path` with `.mp4` added unless it already ends in it (added, not swapped in, so
+/// "clip.final" becomes "clip.final.mp4").
+fn with_mp4_extension(mut path: PathBuf) -> PathBuf {
+    let is_mp4 = path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("mp4"));
+    if !is_mp4 {
+        let mut name = path.file_name().unwrap_or_default().to_os_string();
+        name.push(".mp4");
+        path.set_file_name(name);
+    }
+    path
+}
+
+/// Show a folder in the file manager.
+fn open_folder(dir: &std::path::Path) {
+    #[cfg(windows)]
+    let program = "explorer";
+    #[cfg(target_os = "macos")]
+    let program = "open";
+    #[cfg(not(any(windows, target_os = "macos")))]
+    let program = "xdg-open";
+    let _ = crate::media::quiet_command(program).arg(dir).spawn();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mp4_extension() {
+        let f = |p: &str| with_mp4_extension(PathBuf::from(p));
+        assert_eq!(f("/x/clip"), PathBuf::from("/x/clip.mp4"));
+        assert_eq!(f("/x/clip.final"), PathBuf::from("/x/clip.final.mp4"));
+        assert_eq!(f("/x/clip.MP4"), PathBuf::from("/x/clip.MP4"));
+        assert_eq!(f("/x/my clip.mp4"), PathBuf::from("/x/my clip.mp4"));
     }
 }

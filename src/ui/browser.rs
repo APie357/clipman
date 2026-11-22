@@ -12,7 +12,7 @@ use eframe::egui::{self, Color32, Vec2};
 
 use crate::settings::{Settings, cache_dir};
 
-const EXTENSIONS: [&str; 4] = ["mp4", "mkv", "mov", "webm"];
+const EXTENSIONS: [&str; 4] = super::VIDEO_EXTENSIONS;
 const THUMB_W: f32 = 256.0;
 const THUMB_H: f32 = 144.0;
 const THUMB_WORKERS: usize = 2;
@@ -20,7 +20,6 @@ const THUMB_WORKERS: usize = 2;
 pub enum Action {
     None,
     Open(PathBuf),
-    OpenSettings,
 }
 
 struct Clip {
@@ -150,9 +149,6 @@ impl Browser {
                 ui.heading("Clips");
                 ui.weak(self.folder.display().to_string());
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("Settings").clicked() {
-                        action = Action::OpenSettings;
-                    }
                     if ui.button("Refresh").clicked() {
                         self.refresh();
                     }

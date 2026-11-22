@@ -35,12 +35,27 @@ manager, they open a small progress window that closes itself when done. Other c
 `--remove-menu` (remove clipman's entries from it) and `--fetch-model` (download the noise
 suppression model).
 
+## Menu bar
+
+The browser and the editor share a menu bar:
+
+| Menu | Item | Shortcut |
+|---|---|---|
+| File | Open clip… (pick any clip, wherever it is) | Ctrl+O |
+| File | Export (editor) | Ctrl+E (Ctrl+S also works) |
+| File | Export As… (editor: pick the folder and name) | Ctrl+Shift+E |
+| File | Open export folder | |
+| File | Back to clip browser (editor opened from the browser) | |
+| File | Settings… | Ctrl+, |
+| File | Quit | Ctrl+Q |
+| Help | Version, update status and the project page | |
+
 ## Clip browser
 
 Shows the clips (`mp4`, `mkv`, `mov`, `webm`) in the folder chosen in Settings (default:
 your Videos folder), newest first, with thumbnails. It has a filter box and a Refresh
 button. Click a clip to open it in the editor. *Back to clips* returns, and the editor
-also returns to the browser after saving.
+also returns to the browser after exporting.
 
 ## Editor
 
@@ -48,7 +63,7 @@ also returns to the browser after saving.
   to seek.
 - **Space** plays/pauses (within the selected range). **←/→** step exactly one frame (using the
   clip's real frame timestamps; nearby frames are kept decoded, so most steps are instant),
-  **Shift+←/→** one second. **I** / **O** set the start / end at the playhead. **Ctrl+S** saves.
+  **Shift+←/→** one second. **I** / **O** set the start / end at the playhead. **Ctrl+E** exports.
 - Scrubbing is instant: when a clip opens, a 480p, 10 fps preview strip is decoded in the
   background (a few seconds; kept as JPEG, ~30-40 MB of memory at most). While you drag, the nearest strip
   frame shows immediately, and the sharp frame follows once the playhead rests.
@@ -63,8 +78,10 @@ also returns to the browser after saving.
   which looks clearly better at the same size. A failed GPU encode falls back to x264. *Source* presets copy the video without re-encoding; its start snaps to the
   keyframe at or before the start handle (GSR writes one every ~2 s), and the summary shows
   where it will actually start.
-- **Save** renders with a progress bar in the window (Cancel stops it). The editor closes
-  when done, or goes back to the browser if it was opened from there.
+- **Export** renders into the export folder with a progress bar in the window (Cancel stops
+  it). *File, Export As…* asks where to save instead (`.mp4` is added if the name lacks it;
+  exporting over the original clip is refused). The editor closes when done, or goes back to
+  the browser if it was opened from there.
 
 Output files are `<prefix><clip name><preset suffix>.mp4` in the export folder (default
 `~/Videos/Exports`, created when needed; prefix default `remuxed_`). Nothing is ever

@@ -64,7 +64,8 @@ Notes for coding agents working on clipman. Read README.md first for what it doe
 - `src/explorer.rs`: Explorer entries in HKCU (`…\SystemFileAssociations\<ext>\shell\clipman`,
   a `SubCommands` cascade with numbered subkeys because Explorer sorts them by name). Only
   that `clipman` key is ever written or deleted.
-- `src/ui/`: eframe app. `mod.rs` (screens + CLI render window), `browser.rs`, `editor.rs`,
+- `src/ui/`: eframe app. `mod.rs` (screens, the File/Help menu bar and its shortcuts
+  (`MenuCmd`), the CLI render window), `browser.rs`, `editor.rs`,
   `settings.rs` (modal dialog), `timeline.rs` (custom range widget).
 - `packaging/arch/PKGBUILD`: `clipman-video-git` (VCS package; the name avoids the AUR's
   unrelated `clipman` clipboard manager, and it declares `conflicts` with it because both ship
@@ -102,6 +103,10 @@ Notes for coding agents working on clipman. Read README.md first for what it doe
   streams and breaks audio. Use `.args(["-vf", …])` for video filters.
 - ffmpeg-sidecar asserts that stdin/stdout/stderr are all piped (it panics otherwise). For raw
   PCM, use `pipe_stdout()` + `take_stdout()` and drain stderr in a thread.
+- **Never call an `rfd` dialog on the UI thread.** It blocks drawing until the dialog closes
+  and Hyprland then reports clipman as not responding. Use `ui::PendingDialog::spawn` (runs
+  it on a thread, poll the result each frame), as Open, Export As and the Settings folder
+  pickers do.
 - `arnndn` sometimes emits NaN / huge samples (mostly in its end-of-stream flush). The `aeval`
   step after it zeroes them; without it AAC fails with "Input contains (near) NaN/+-Inf".
   Don't clamp instead: that turns the spikes into clicks.
@@ -133,8 +138,12 @@ Notes for coding agents working on clipman. Read README.md first for what it doe
   cache aren't touched. `CLIPMAN_DEBUG=1` prints every ffmpeg command and the editor's key events.
   Never write test output into `~/Videos`; the default export folder is `~/Videos/Exports`, so
   also point `HOME` at a scratch dir (or set `export_folder`) when testing renders.
-- Driving the GUI on Hyprland: `hyprctl dispatch "hl.dsp.send_shortcut({ mods = 'CTRL', key = 's', window = 'pid:N' })"`
-  sends keys. `hyprctl eval 'hl.window_rule{…}'` adds a temporary rule (gone after
+- Driving the GUI on Hyprland: `hyprctl dispatch "hl.dsp.send_shortcut({ mods = 'CTRL', key = 'e', window = 'pid:N' })"`
+  sends keys. For clicks (menus, file dialogs) and typing, the user is in the `plover` group,
+  so `/dev/uinput` is writable and python-evdev is installed: a throwaway uinput mouse,
+  moved with small relative steps checked against `hyprctl cursorpos` (acceleration makes
+  single jumps miss), then `BTN_LEFT`. Click into a portal dialog's field before typing; it
+  doesn't take focus on its own. `hyprctl eval 'hl.window_rule{…}'` adds a temporary rule (gone after
   `hyprctl reload`). `grim -g "x,y wxh"` takes screenshots. Don't `pkill -f clipman` from a
   shell whose own command line contains "clipman"; it kills that shell.
 - Windows compile check from Linux: `cargo check --target x86_64-pc-windows-gnu --no-default-features`
