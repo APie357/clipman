@@ -20,8 +20,11 @@ Notes for coding agents working on clipman. Read README.md first for what it doe
 - `src/settings.rs`: the JSON settings. `Preset` (`type` compress|original, blank
   name shows as `<h>p<fps>`, `max_mb` None = no limit), `TrackCfg` keyed by the stream's
   name tag, `output_path()` (single naming scheme, never overwrites, no stacked prefix).
-- `src/media.rs`: ffprobe (duration, size, fps, audio name tags, keyframes), `ensure_ffmpeg()`
-  (auto-download via ffmpeg-sidecar), and `quiet_command()` (no console window on Windows).
+- `src/media.rs`: ffprobe (duration, size, fps, audio name tags, frame/keyframe times),
+  `ffmpeg_bin()` / `ffprobe_bin()` (next to the exe, then PATH, then the download dir) and
+  `ensure_ffmpeg()`, which downloads into the per-user data dir because the exe dir can be
+  read-only (AppImage, Program Files). Always use these instead of ffmpeg-sidecar's own path
+  helpers. `quiet_command()` avoids console windows on Windows.
 - `src/render.rs`: `render(job, progress, cancel)`. Two-pass x264 to `max_mb × 0.97` with
   retries, CRF 20 when there's no limit, lossless keyframe-aligned trims, the `AudioPlan`
   mix / noise suppression graph, and the RNNoise model download (pinned URL + SHA-256).
@@ -29,7 +32,11 @@ Notes for coding agents working on clipman. Read README.md first for what it doe
   a shared wall clock. Scrubbing: a background "scrub strip" (854 px, 10 fps, max 600 frames,
   stored as JPEG from ffmpeg's MJPEG output) is shown instantly on seek. The exact frame is decoded only after the playhead rests
   (`SEEK_SETTLE`), and a newer command cancels the decode. Every command carries a generation
-  number so stale frames are never published. Audio is the same `AudioPlan` decoded to f32 PCM and played through
+  number so stale frames are never published. Frame stepping (`step_to`) moves between real
+  frame timestamps (`media::frame_times`, from packet pts, so variable frame rate works too)
+  and never shows the strip. Exact seeks decode a window of frames (3 before, 9 after) and
+  keep it, so nearby steps are instant. Seek times are formatted with 6 decimals: millisecond
+  rounding (0.0167 → 0.017) skipped past frames. Audio is the same `AudioPlan` decoded to f32 PCM and played through
   rodio. Includes an ignored real-clip test (see Testing).
 - `src/thunar.rs`: generates the Thunar `uca.xml` entries (`clipman-preset-<id>`, `clipman-edit`).
 - `src/ui/`: eframe app. `mod.rs` (screens + CLI render window), `browser.rs`, `editor.rs`,

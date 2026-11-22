@@ -10,7 +10,7 @@
 
 pkgname=clipman-video-git
 _name=clipman
-pkgver=r7.646fbc2
+pkgver=r8.dfb1697
 pkgrel=1
 pkgdesc="Native clip browser, trimmer and compressor for game clips"
 arch=('x86_64' 'aarch64')
@@ -77,6 +77,8 @@ package() {
   install -Dm755 target/release/clipman "${pkgdir}/usr/bin/clipman"
   sed 's|@EXE@|clipman|' extras/clipman.desktop |
     install -Dm644 /dev/stdin "${pkgdir}/usr/share/applications/clipman.desktop"
+  install -Dm644 extras/clipman.png "${pkgdir}/usr/share/icons/hicolor/256x256/apps/clipman.png"
+  install -Dm644 extras/clipman.svg "${pkgdir}/usr/share/icons/hicolor/scalable/apps/clipman.svg"
   install -Dm644 README.md "${pkgdir}/usr/share/doc/${_name}/README.md"
   # opt-in extras: Hyprland window rule and a GPU Screen Recorder config
   install -Dm644 extras/hyprland/clipman.lua "${pkgdir}/usr/share/${_name}/hyprland/clipman.lua"

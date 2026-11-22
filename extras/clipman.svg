@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <!-- Clipman icon: a clip frame with trim brackets and a play triangle -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2b3a55"/>
+      <stop offset="1" stop-color="#16203a"/>
+    </linearGradient>
+  </defs>
+  <rect x="12" y="12" width="232" height="232" rx="52" fill="url(#bg)"/>
+  <!-- trim brackets -->
+  <path d="M84 64 H60 V192 H84" fill="none" stroke="#4fa3ff" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M172 64 H196 V192 H172" fill="none" stroke="#4fa3ff" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- play -->
+  <path d="M110 92 L162 128 L110 164 Z" fill="#ffffff" stroke="#ffffff" stroke-width="10" stroke-linejoin="round"/>
+</svg>

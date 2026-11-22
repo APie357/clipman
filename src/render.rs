@@ -207,7 +207,7 @@ impl AudioPlan {
 
 /// Run every ffmpeg from the cache dir so `arnndn=m=lq.rnnn` resolves.
 pub fn ffmpeg() -> FfmpegCommand {
-    let mut cmd = FfmpegCommand::new();
+    let mut cmd = FfmpegCommand::new_with_path(media::ffmpeg_bin());
     let dir = cache_dir();
     let _ = std::fs::create_dir_all(&dir);
     cmd.as_inner_mut().current_dir(dir);

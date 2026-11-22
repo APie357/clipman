@@ -67,6 +67,17 @@ pub fn initial_size(start: &Start) -> Vec2 {
     }
 }
 
+fn icon() -> egui::IconData {
+    let img = image::load_from_memory(include_bytes!("../../extras/clipman.png"))
+        .expect("bundled icon")
+        .into_rgba8();
+    egui::IconData {
+        width: img.width(),
+        height: img.height(),
+        rgba: img.into_raw(),
+    }
+}
+
 pub fn run(start: Start) -> eframe::Result<()> {
     let title = match &start {
         Start::Editor(p) => format!(
@@ -81,7 +92,8 @@ pub fn run(start: Start) -> eframe::Result<()> {
             .with_app_id(APP_ID) // Wayland app_id / X11 class, e.g. for Hyprland rules
             .with_title(title)
             .with_inner_size(initial_size(&start))
-            .with_min_inner_size([480.0, 200.0]),
+            .with_min_inner_size([480.0, 200.0])
+            .with_icon(icon()),
         ..Default::default()
     };
     eframe::run_native(

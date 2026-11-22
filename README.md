@@ -44,8 +44,9 @@ also returns to the browser after saving.
 
 - Drag the **handles under the timeline** to set the start and end. Click or drag the bar
   to seek.
-- **Space** plays/pauses (within the selected range). **←/→** step one frame, **Shift+←/→**
-  one second. **I** / **O** set the start / end at the playhead. **Ctrl+S** saves.
+- **Space** plays/pauses (within the selected range). **←/→** step exactly one frame (using the
+  clip's real frame timestamps; nearby frames are kept decoded, so most steps are instant),
+  **Shift+←/→** one second. **I** / **O** set the start / end at the playhead. **Ctrl+S** saves.
 - Scrubbing is instant: when a clip opens, a 480p, 10 fps preview strip is decoded in the
   background (a few seconds; kept as JPEG, ~30-40 MB of memory at most). While you drag, the nearest strip
   frame shows immediately, and the sharp frame follows once the playhead rests.
@@ -90,8 +91,9 @@ checked against a SHA-256, and caches it in `~/.cache/clipman/`.
 
 ## Building and installing
 
-Needs Rust (stable) and ffmpeg + ffprobe. If ffmpeg isn't found, clipman downloads a build
-next to its executable.
+Needs Rust (stable) and ffmpeg + ffprobe. clipman looks for them next to its executable, then
+on `PATH`. If neither has them, it downloads a build into its data folder
+(`~/.local/share/clipman/ffmpeg`, `%LOCALAPPDATA%\clipman\ffmpeg`).
 
 **Linux:**
 

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Clip metadata via ffprobe, and making sure ffmpeg/ffprobe are available.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result};
@@ -21,19 +21,81 @@ pub fn quiet_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
     cmd
 }
 
-/// Make sure ffmpeg (and ffprobe) can be run. When they're missing, download a build
-/// next to our executable (ffmpeg-sidecar does this for Windows, macOS and Linux).
+fn exe_name(name: &str) -> String {
+    if cfg!(windows) {
+        format!("{name}.exe")
+    } else {
+        name.to_string()
+    }
+}
+
+/// Where clipman downloads ffmpeg when it isn't installed. A per-user data dir, because
+/// the executable's own folder may be read-only (AppImage mount, Program Files).
+pub fn ffmpeg_download_dir() -> PathBuf {
+    dirs::data_local_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("clipman")
+        .join("ffmpeg")
+}
+
+fn find_in_path(name: &str) -> Option<PathBuf> {
+    std::env::split_paths(&std::env::var_os("PATH")?)
+        .map(|d| d.join(name))
+        .find(|p| p.is_file())
+}
+
+/// A helper binary (ffmpeg / ffprobe): next to our executable (portable installs), then on
+/// PATH, then in the download dir. Falls back to the bare name.
+fn tool(name: &str) -> PathBuf {
+    let file = exe_name(name);
+    let beside_exe = std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(|d| d.join(&file)))
+        .filter(|p| p.is_file());
+    beside_exe
+        .or_else(|| find_in_path(&file))
+        .or_else(|| Some(ffmpeg_download_dir().join(&file)).filter(|p| p.is_file()))
+        .unwrap_or_else(|| PathBuf::from(file))
+}
+
+pub fn ffmpeg_bin() -> PathBuf {
+    tool("ffmpeg")
+}
+
+pub fn ffprobe_bin() -> PathBuf {
+    tool("ffprobe")
+}
+
+fn runs(bin: &Path) -> bool {
+    quiet_command(bin)
+        .arg("-version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
+/// Make sure ffmpeg and ffprobe can be run, downloading a build into
+/// `ffmpeg_download_dir()` when they're missing.
 pub fn ensure_ffmpeg() -> Result<()> {
-    if ffmpeg_sidecar::command::ffmpeg_is_installed()
-        && ffmpeg_sidecar::ffprobe::ffprobe_is_installed()
-    {
+    if runs(&ffmpeg_bin()) && runs(&ffprobe_bin()) {
         return Ok(());
     }
     #[cfg(feature = "download")]
     {
-        eprintln!("ffmpeg not found, downloading it…");
-        ffmpeg_sidecar::download::auto_download().context("couldn't download ffmpeg")?;
-        Ok(())
+        use ffmpeg_sidecar::download::{
+            download_ffmpeg_package, ffmpeg_download_url, unpack_ffmpeg,
+        };
+        let dir = ffmpeg_download_dir();
+        eprintln!("ffmpeg not found, downloading it to {}…", dir.display());
+        std::fs::create_dir_all(&dir)?;
+        let url = ffmpeg_download_url().context("no ffmpeg download for this platform")?;
+        let archive = download_ffmpeg_package(url, &dir).context("couldn't download ffmpeg")?;
+        unpack_ffmpeg(&archive, &dir).context("couldn't unpack ffmpeg")?;
+        if runs(&ffmpeg_bin()) && runs(&ffprobe_bin()) {
+            return Ok(());
+        }
+        anyhow::bail!("downloaded ffmpeg doesn't run")
     }
     #[cfg(not(feature = "download"))]
     anyhow::bail!("ffmpeg / ffprobe not found")
@@ -82,7 +144,7 @@ struct ProbeFormat {
 }
 
 pub fn probe(path: &Path) -> Result<ClipInfo> {
-    let out = quiet_command(ffmpeg_sidecar::ffprobe::ffprobe_path())
+    let out = quiet_command(ffprobe_bin())
         .args([
             "-v",
             "error",
@@ -137,8 +199,17 @@ fn parse_rate(r: &str) -> f64 {
 }
 
 /// Keyframe timestamps in seconds, from packet flags (fast, no decoding).
-pub fn keyframes(path: &Path) -> Vec<f64> {
-    let out = quiet_command(ffmpeg_sidecar::ffprobe::ffprobe_path())
+/// Timestamps (seconds) of every video frame and of the keyframes, from packet info
+/// (fast, no decoding). Real timestamps, so frame stepping also works for variable
+/// frame rate clips.
+#[derive(Clone, Debug, Default)]
+pub struct FrameTimes {
+    pub all: Vec<f64>,
+    pub keys: Vec<f64>,
+}
+
+pub fn frame_times(path: &Path) -> FrameTimes {
+    let out = quiet_command(ffprobe_bin())
         .args([
             "-v",
             "error",
@@ -150,20 +221,36 @@ pub fn keyframes(path: &Path) -> Vec<f64> {
         .args(["-of", "csv=p=0"])
         .arg(path)
         .output();
-    let mut kf: Vec<f64> = out
+    let mut ft = FrameTimes::default();
+    for l in out
         .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
         .unwrap_or_default()
         .lines()
-        .filter_map(|l| {
-            let (t, flags) = l.split_once(',')?;
-            flags.contains('K').then(|| t.parse().ok()).flatten()
-        })
-        .collect();
-    kf.sort_by(f64::total_cmp);
-    if kf.is_empty() {
-        kf.push(0.0);
+    {
+        let Some((t, flags)) = l.split_once(',') else {
+            continue;
+        };
+        let Ok(t) = t.parse::<f64>() else { continue };
+        ft.all.push(t);
+        if flags.contains('K') {
+            ft.keys.push(t);
+        }
     }
-    kf
+    ft.all.sort_by(f64::total_cmp); // packets are in decode order
+    ft.keys.sort_by(f64::total_cmp);
+    if ft.keys.is_empty() {
+        ft.keys.push(0.0);
+    }
+    ft
+}
+
+pub fn keyframes(path: &Path) -> Vec<f64> {
+    frame_times(path).keys
+}
+
+/// Index of the frame showing at time `t` (the last one starting at or before it).
+pub fn frame_index(all: &[f64], t: f64) -> usize {
+    all.partition_point(|&p| p <= t + 0.0005).saturating_sub(1)
 }
 
 /// The last keyframe at or before `t` (a lossless cut has to start on one).

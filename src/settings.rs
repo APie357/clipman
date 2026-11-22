@@ -205,7 +205,7 @@ pub fn default_presets() -> Vec<Preset> {
     };
     vec![
         compress("primary", 720, 60, ""),
-        compress("secondary", 1080, 30, "_1080p"),
+        compress("secondary", 1080, 30, ""),
         Preset {
             id: "original".into(),
             kind: PresetKind::Original,

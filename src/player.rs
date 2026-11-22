@@ -22,6 +22,11 @@ const SAMPLE_RATE: u32 = 48_000;
 const SCRUB_WIDTH: u32 = 854;
 const SCRUB_FPS: f64 = 10.0;
 const SCRUB_MAX_FRAMES: f64 = 600.0; // ~30-40 MB of JPEG, whatever the clip length
+/// Exact seeks decode a window of frames around the target and keep them, so stepping
+/// frame by frame nearby is instant. Biased forward, the usual stepping direction
+/// (13 frames at 1280x720 ≈ 36 MB).
+const WINDOW_BEFORE: usize = 3;
+const WINDOW_AFTER: usize = 9;
 /// Wait this long for the playhead to settle before decoding the exact frame.
 const SEEK_SETTLE: Duration = Duration::from_millis(40);
 
@@ -57,6 +62,8 @@ pub struct Player {
     video_tx: Sender<VideoCmd>,
     generation: Arc<AtomicU64>,
     strip: Arc<Mutex<ScrubStrip>>,
+    /// Exactly decoded frames around the last exact seek: (timestamp, frame).
+    window: Arc<Mutex<Vec<(f64, Frame)>>>,
     alive: Arc<AtomicBool>,
     ctx: eframe::egui::Context,
     /// Some((wall-clock start, media time at start)) while playing.
@@ -69,6 +76,7 @@ impl Player {
     pub fn new(
         src: PathBuf,
         duration: f64,
+        fps: f64,
         preview_width: u32,
         ctx: eframe::egui::Context,
     ) -> Self {
@@ -76,6 +84,7 @@ impl Player {
         let generation = Arc::new(AtomicU64::new(0));
         let alive = Arc::new(AtomicBool::new(true));
         let step = (1.0 / SCRUB_FPS).max(duration / SCRUB_MAX_FRAMES);
+        let window = Arc::new(Mutex::new(Vec::new()));
         let strip = Arc::new(Mutex::new(ScrubStrip {
             step,
             frames: Vec::new(),
@@ -83,7 +92,11 @@ impl Player {
         let (video_tx, rx) = mpsc::channel();
         {
             let (f, s, g, c) = (frame.clone(), src.clone(), generation.clone(), ctx.clone());
-            std::thread::spawn(move || video_thread(s, duration, preview_width, rx, f, g, c));
+            let w = window.clone();
+            let frame_dur = if fps > 1.0 { 1.0 / fps } else { 1.0 / 60.0 };
+            std::thread::spawn(move || {
+                video_thread(s, duration, frame_dur, preview_width, rx, f, w, g, c)
+            });
             let (s, st, a) = (src.clone(), strip.clone(), alive.clone());
             std::thread::spawn(move || strip_thread(s, step, st, a));
         }
@@ -94,6 +107,7 @@ impl Player {
             video_tx,
             generation,
             strip,
+            window,
             alive,
             ctx,
             clock: None,
@@ -154,9 +168,40 @@ impl Player {
         } else {
             self.paused_at = t;
             let g = self.next_generation();
-            self.show_strip_frame(t);
+            if !self.show_window_frame(t) {
+                self.show_strip_frame(t);
+                self.video_tx.send(VideoCmd::Seek(t, g)).ok();
+            }
+        }
+    }
+
+    /// Show the exact frame at timestamp `t` (frame stepping): instant when it's in the
+    /// decoded window, otherwise decoded without flashing the low-res strip in between.
+    pub fn step_to(&mut self, t: f64, audio: Option<(&rodio::mixer::Mixer, &AudioPlan)>) {
+        let t = t.clamp(0.0, self.duration);
+        if self.is_playing() {
+            return self.play(t, audio);
+        }
+        self.paused_at = t;
+        let g = self.next_generation();
+        if !self.show_window_frame(t) {
             self.video_tx.send(VideoCmd::Seek(t, g)).ok();
         }
+    }
+
+    /// Publish the frame at `t` from the decoded window, if it's there.
+    fn show_window_frame(&self, t: f64) -> bool {
+        let Ok(win) = self.window.lock() else {
+            return false;
+        };
+        let Some((_, f)) = win.iter().find(|(p, _)| (p - t).abs() < 0.004) else {
+            return false;
+        };
+        if let Ok(mut slot) = self.frame.lock() {
+            *slot = Some(f.clone());
+        }
+        self.ctx.request_repaint();
+        true
     }
 
     fn next_generation(&mut self) -> u64 {
@@ -259,7 +304,7 @@ fn strip_thread(src: PathBuf, step: f64, strip: Arc<Mutex<ScrubStrip>>, alive: A
 
 fn video_cmd(src: &PathBuf, t: f64, width: u32) -> ffmpeg_sidecar::command::FfmpegCommand {
     let mut cmd = render::ffmpeg();
-    cmd.seek(format!("{t:.3}")).input(src).map("0:v:0");
+    cmd.seek(format!("{t:.6}")).input(src).map("0:v:0");
     cmd.args(["-vf", &format!("scale={width}:-2:flags=bilinear")]);
     cmd
 }
@@ -269,15 +314,27 @@ fn kill(mut child: FfmpegChild) {
     let _ = child.wait();
 }
 
+#[allow(clippy::too_many_arguments)]
 fn video_thread(
     src: PathBuf,
     duration: f64,
+    frame_dur: f64,
     width: u32,
     rx: Receiver<VideoCmd>,
     out: Arc<Mutex<Option<Frame>>>,
+    window: Arc<Mutex<Vec<(f64, Frame)>>>,
     generation: Arc<AtomicU64>,
     ctx: eframe::egui::Context,
 ) {
+    let publish_frame = |f: Frame, g: u64| {
+        if generation.load(Ordering::SeqCst) != g {
+            return;
+        }
+        if let Ok(mut slot) = out.lock() {
+            *slot = Some(f);
+        }
+        ctx.request_repaint();
+    };
     let publish = |f: ffmpeg_sidecar::event::OutputVideoFrame, g: u64| {
         if generation.load(Ordering::SeqCst) != g {
             return; // a newer seek/play superseded this one
@@ -320,25 +377,55 @@ fn video_thread(
                 // decode nothing; stay a little before it and step back if still empty.
                 let mut at = t.min(duration - 0.05).max(0.0);
                 for _attempt in 0..3 {
-                    let Ok(mut child) = video_cmd(&src, at, width).frames(1).rawvideo().spawn()
+                    // decode a window of frames around the target and keep them, so the
+                    // next frame steps nearby don't need ffmpeg at all
+                    let from = (at - WINDOW_BEFORE as f64 * frame_dur).max(0.0);
+                    let count = (WINDOW_BEFORE + 1 + WINDOW_AFTER) as u32;
+                    let Ok(mut child) = video_cmd(&src, from, width)
+                        .frames(count)
+                        .rawvideo()
+                        .spawn()
                     else {
                         break;
                     };
                     let Ok(iter) = child.iter() else { break };
                     let mut got = false;
+                    let mut frames: Vec<(f64, Frame)> = Vec::new();
                     for ev in iter {
                         // a newer request cancels this decode
                         if let Ok(c) = rx.try_recv() {
                             pending = Some(c);
                             break;
                         }
-                        if let FfmpegEvent::OutputFrame(f) = ev {
-                            publish(f, g);
+                        let FfmpegEvent::OutputFrame(f) = ev else {
+                            continue;
+                        };
+                        let pts = from + f.timestamp as f64;
+                        let frame = Frame {
+                            width: f.width as usize,
+                            height: f.height as usize,
+                            rgb: f.data,
+                        };
+                        // show the target as soon as it's decoded (first frame at/after `at`)
+                        if !got && pts >= at - 0.0005 {
+                            publish_frame(frame.clone(), g);
                             got = true;
+                        }
+                        frames.push((pts, frame));
+                        if frames.len() as u32 >= count {
                             break;
                         }
                     }
                     kill(child);
+                    if !got && let Some((_, last)) = frames.last() {
+                        publish_frame(last.clone(), g); // near the end: the last frame there is
+                        got = true;
+                    }
+                    if !frames.is_empty()
+                        && let Ok(mut w) = window.lock()
+                    {
+                        *w = frames;
+                    }
                     if got || pending.is_some() || at <= 0.0 {
                         break;
                     }
@@ -399,7 +486,7 @@ impl AudioStream {
             return None;
         }
         let mut cmd = render::ffmpeg();
-        cmd.seek(format!("{t:.3}")).input(src);
+        cmd.seek(format!("{t:.6}")).input(src);
         plan.apply(&mut cmd);
         cmd.args(["-f", "f32le", "-ar", &SAMPLE_RATE.to_string(), "-ac", "2"])
             .pipe_stdout();
@@ -514,7 +601,13 @@ mod tests {
         let clip =
             PathBuf::from(std::env::var("CLIPMAN_TEST_CLIP").expect("set CLIPMAN_TEST_CLIP"));
         let info = crate::media::probe(&clip).unwrap();
-        let mut p = Player::new(clip, info.duration, 1280, eframe::egui::Context::default());
+        let mut p = Player::new(
+            clip,
+            info.duration,
+            info.fps,
+            1280,
+            eframe::egui::Context::default(),
+        );
         let wait_frame = |p: &Player, max_ms: u64| -> Option<(Duration, usize)> {
             let t0 = Instant::now();
             while t0.elapsed() < Duration::from_millis(max_ms) {
@@ -565,6 +658,86 @@ mod tests {
         assert_eq!(sizes.last(), Some(&1280), "end frame stayed low-res");
     }
 
+    /// Frame stepping shows exactly frame N: `CLIPMAN_TEST_CLIP=clip.mp4 cargo test -- --ignored`
+    #[test]
+    #[ignore]
+    fn frame_steps_are_exact() {
+        let clip =
+            PathBuf::from(std::env::var("CLIPMAN_TEST_CLIP").expect("set CLIPMAN_TEST_CLIP"));
+        let info = crate::media::probe(&clip).unwrap();
+        let ft = crate::media::frame_times(&clip);
+        let mut p = Player::new(
+            clip.clone(),
+            info.duration,
+            info.fps,
+            1280,
+            eframe::egui::Context::default(),
+        );
+        let wait = |p: &Player| {
+            let t0 = Instant::now();
+            loop {
+                if let Some(f) = p.take_frame() {
+                    return (t0.elapsed(), f);
+                }
+                assert!(t0.elapsed() < Duration::from_secs(3), "no frame");
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        };
+        wait(&p);
+        // reference: frame N decoded by number, same scaling
+        let reference = |n: usize| -> Vec<u8> {
+            let out = std::process::Command::new("ffmpeg")
+                .args(["-v", "error", "-i"])
+                .arg(&clip)
+                .args([
+                    "-map",
+                    "0:v:0",
+                    "-vf",
+                    &format!("select=eq(n\\,{n}),scale=1280:-2:flags=bilinear"),
+                ])
+                .args(["-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"])
+                .output()
+                .unwrap();
+            out.stdout
+        };
+        let mut lat = vec![];
+        for n in 300..312 {
+            p.step_to(ft.all[n], None);
+            let (l, f) = wait(&p);
+            lat.push(l);
+            let r = reference(n);
+            assert_eq!(f.rgb.len(), r.len());
+            let diff = f
+                .rgb
+                .iter()
+                .zip(&r)
+                .map(|(a, b)| (*a as i32 - *b as i32).unsigned_abs() as u64)
+                .sum::<u64>() as f64
+                / r.len() as f64;
+            assert!(diff < 2.0, "frame {n}: mean pixel difference {diff:.2}");
+            // and it isn't also identical to a neighbour (the step really moved one frame)
+            let prev = reference(n - 1);
+            let d_prev = f
+                .rgb
+                .iter()
+                .zip(&prev)
+                .map(|(a, b)| (*a as i32 - *b as i32).unsigned_abs() as u64)
+                .sum::<u64>() as f64
+                / r.len() as f64;
+            eprintln!(
+                "frame {n}: diff to reference {diff:.3}, to previous frame {d_prev:.3}, shown after {l:?}"
+            );
+        }
+        let instant = lat
+            .iter()
+            .filter(|l| **l < Duration::from_millis(5))
+            .count();
+        eprintln!(
+            "{instant}/{} steps served from the decoded window instantly",
+            lat.len()
+        );
+    }
+
     /// Plays a real clip for 2 s: `CLIPMAN_TEST_CLIP=clip.mp4 cargo test -- --ignored`
     #[test]
     #[ignore]
@@ -573,7 +746,7 @@ mod tests {
             PathBuf::from(std::env::var("CLIPMAN_TEST_CLIP").expect("set CLIPMAN_TEST_CLIP"));
         let info = crate::media::probe(&clip).unwrap();
         let ctx = eframe::egui::Context::default();
-        let mut p = Player::new(clip, info.duration, 960, ctx);
+        let mut p = Player::new(clip, info.duration, info.fps, 960, ctx);
         let first = (0..100).find_map(|_| {
             std::thread::sleep(Duration::from_millis(20));
             p.take_frame()

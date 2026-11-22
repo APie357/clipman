@@ -58,6 +58,9 @@ echo "installed $EXE"
 APPS="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 mkdir -p "$APPS"
 sed "s|@EXE@|$EXE|" "$REPO/extras/clipman.desktop" > "$APPS/clipman.desktop"
+ICONS="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor"
+install -Dm644 "$REPO/extras/clipman.png" "$ICONS/256x256/apps/clipman.png"
+install -Dm644 "$REPO/extras/clipman.svg" "$ICONS/scalable/apps/clipman.svg"
 command -v update-desktop-database >/dev/null && update-desktop-database "$APPS" 2>/dev/null || true
 echo "installed $APPS/clipman.desktop"
 

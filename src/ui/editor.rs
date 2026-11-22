@@ -50,7 +50,8 @@ struct TrackUi {
 pub struct Editor {
     pub path: PathBuf,
     pub info: ClipInfo,
-    keyframes: Vec<f64>,
+    /// Every frame's timestamp and the keyframes (frame stepping, lossless cuts).
+    frames: media::FrameTimes,
     player: Player,
     texture: Option<egui::TextureHandle>,
     timeline: Timeline,
@@ -72,14 +73,14 @@ impl Editor {
         from_browser: bool,
     ) -> anyhow::Result<Self> {
         let info = media::probe(&path)?;
-        let keyframes = media::keyframes(&path);
+        let frames = media::frame_times(&path);
         let width = info.width.clamp(320, PREVIEW_MAX_WIDTH);
-        let player = Player::new(path.clone(), info.duration, width, ctx.clone());
+        let player = Player::new(path.clone(), info.duration, info.fps, width, ctx.clone());
         let mut ed = Self {
             timeline: Timeline::new(info.duration),
             path,
             info,
-            keyframes,
+            frames,
             player,
             texture: None,
             tracks: Vec::new(),
@@ -242,7 +243,7 @@ impl Editor {
             return "No presets: add one in Settings".into();
         };
         if p.is_original() {
-            let k = media::keyframe_before(&self.keyframes, s);
+            let k = media::keyframe_before(&self.frames.keys, s);
             let note = if s - k > 0.02 {
                 format!("starts at {} (keyframe)", fmt_time(k))
             } else {
@@ -398,16 +399,16 @@ impl Editor {
             if save && self.preset_id.is_some() {
                 self.start_render(settings);
             }
-            // ←/→ step one frame, Shift+←/→ one second
-            if step != (0, 0) {
-                let frame = 1.0
-                    / if self.info.fps > 1.0 {
-                        self.info.fps
-                    } else {
-                        60.0
-                    };
-                let t = self.player.position() + step.0 as f64 * frame + step.1 as f64;
+            // ←/→ step one frame (to the real neighbouring frame), Shift+←/→ one second
+            if step.1 != 0 {
+                let t = self.player.position() + step.1 as f64;
                 self.seek(t.clamp(0.0, self.info.duration), settings, mixer);
+            } else if step.0 != 0 && !self.frames.all.is_empty() {
+                let all = &self.frames.all;
+                let i = media::frame_index(all, self.player.position()) as i64 + step.0 as i64;
+                let t = all[i.clamp(0, all.len() as i64 - 1) as usize];
+                let plan = self.preview_plan(settings);
+                self.player.step_to(t, mixer.map(|m| (m, &plan)));
             }
         }
 
