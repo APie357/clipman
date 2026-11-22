@@ -1,0 +1,85 @@
+# Maintainer: APie357
+# SPDX-License-Identifier: Apache-2.0
+#
+# Builds the latest commit of clipman from GitHub. The repo is private and makepkg
+# ignores ~/.gitconfig, so pass your git config for the GitHub credentials:
+#   MAKEPKG_GIT_CONFIG=~/.gitconfig makepkg -si
+#
+# Named clipman-video-git because "clipman" / "clipman-git" in the AUR are an unrelated
+# Wayland clipboard manager that also installs /usr/bin/clipman.
+
+pkgname=clipman-video-git
+_name=clipman
+pkgver=r2.e814e7b
+pkgrel=1
+pkgdesc="Native clip browser, trimmer and compressor for game clips"
+arch=('x86_64' 'aarch64')
+url="https://github.com/APie357/clipman"
+license=('Apache-2.0')
+depends=(
+  'ffmpeg'           # encoding, decoding, probing (runs ffmpeg / ffprobe)
+  'alsa-lib'         # audio output (PipeWire/PulseAudio via their ALSA plugins)
+  'gcc-libs'
+  'glibc'
+  'xz'
+  # loaded at runtime by the windowing / GL stack
+  'libglvnd'
+  'libxkbcommon'
+  'wayland'
+  'libx11'
+  'libxcursor'
+  'libxi'
+  'libxcb'
+)
+makedepends=('cargo' 'git')
+optdepends=(
+  'thunar: right-click menu entries (run clipman --write-thunar)'
+  'gpu-screen-recorder: recording the clips'
+  'xdg-desktop-portal: folder picker in Settings'
+)
+provides=("clipman-video=${pkgver}")
+conflicts=('clipman' 'clipman-git')
+# makepkg's LTO flags turn the `ring` crate's C code into GCC LTO objects that Rust's
+# linker can't read; Cargo's own (thin) LTO still applies.
+options=('!lto' '!debug') # debug: the release profile already strips the binary
+source=("${_name}::git+https://github.com/APie357/clipman.git")
+sha256sums=('SKIP')
+
+pkgver() {
+  cd "${_name}"
+  printf "r%s.%s" "$(git rev-list --count HEAD)" "$(git rev-parse --short=7 HEAD)"
+}
+
+prepare() {
+  cd "${_name}"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+  cd "${_name}"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  # keep the build directory out of the binary (panic messages embed source paths)
+  export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=${srcdir}=/build"
+  cargo build --frozen --release
+}
+
+check() {
+  cd "${_name}"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  cargo test --frozen --release
+}
+
+package() {
+  cd "${_name}"
+  install -Dm755 target/release/clipman "${pkgdir}/usr/bin/clipman"
+  sed 's|@EXE@|clipman|' extras/clipman.desktop |
+    install -Dm644 /dev/stdin "${pkgdir}/usr/share/applications/clipman.desktop"
+  install -Dm644 README.md "${pkgdir}/usr/share/doc/${_name}/README.md"
+  # opt-in extras: Hyprland window rule and a GPU Screen Recorder config
+  install -Dm644 extras/hyprland/clipman.lua "${pkgdir}/usr/share/${_name}/hyprland/clipman.lua"
+  install -Dm644 extras/gpu-screen-recorder/config_ui \
+    "${pkgdir}/usr/share/${_name}/gpu-screen-recorder/config_ui"
+}

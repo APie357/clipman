@@ -31,6 +31,13 @@ Notes for coding agents working on clipman. Read README.md first for what it doe
 - `src/thunar.rs`: generates the Thunar `uca.xml` entries (`clipman-preset-<id>`, `clipman-edit`).
 - `src/ui/`: eframe app. `mod.rs` (screens + CLI render window), `browser.rs`, `editor.rs`,
   `settings.rs` (modal dialog), `timeline.rs` (custom range widget).
+- `packaging/arch/PKGBUILD`: `clipman-video-git` (VCS package; the name avoids the AUR's
+  unrelated `clipman` clipboard manager, and it declares `conflicts` with it because both ship
+  `/usr/bin/clipman`). Needs `options=('!lto')`: makepkg's LTO makes `ring`'s C objects
+  unlinkable by rust-lld. `--remap-path-prefix` keeps `$srcdir` out of the binary. Test with
+  `MAKEPKG_GIT_CONFIG=~/.gitconfig makepkg -f` (makepkg ignores the global git config, and the
+  repo is private). If dynamic libraries change, re-check `depends` against `ldd` plus the
+  dlopened Wayland/X11/GL libs.
 - `scripts/install.sh`: Linux installer. `--hyprland` / `--gsr` are opt-in. `extras/` holds
   the Hyprland rule, the desktop entry and the GSR config snapshot (`@HOME@` placeholders).
 

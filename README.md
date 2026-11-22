@@ -102,6 +102,19 @@ scripts/install.sh --save-gsr        # copy your live GSR config into extras/
 Each file is backed up before it's changed, and re-running the script changes nothing more.
 The opt-in extras live in `extras/`.
 
+**Arch Linux package:** `packaging/arch/PKGBUILD` builds `clipman-video-git` from the latest
+commit on GitHub. It's not called `clipman`, because the AUR's `clipman` / `clipman-git` are an
+unrelated Wayland clipboard manager, which also installs `/usr/bin/clipman`, so the two
+conflict. The repo is private and makepkg ignores `~/.gitconfig`, so pass it for the GitHub
+credentials:
+
+```sh
+cd packaging/arch && MAKEPKG_GIT_CONFIG=~/.gitconfig makepkg -si
+clipman --write-thunar        # per user, if you want the Thunar right-click entries
+```
+
+The package puts the Hyprland rule and the GSR config in `/usr/share/clipman/`.
+
 **Windows:** `cargo build --release` gives `target\release\clipman.exe`. It runs without a
 console window and still prints to the terminal when started from one. Thunar integration
 is Linux-only; an Explorer context menu isn't implemented yet.
