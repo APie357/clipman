@@ -212,14 +212,14 @@ fn strip_thread(src: PathBuf, step: f64, strip: Arc<Mutex<ScrubStrip>>, alive: A
         if !alive.load(Ordering::Relaxed) {
             break;
         }
-        if let FfmpegEvent::OutputFrame(f) = ev {
-            if let Ok(mut s) = strip.lock() {
-                s.frames.push(Frame {
-                    width: f.width as usize,
-                    height: f.height as usize,
-                    rgb: f.data,
-                });
-            }
+        if let FfmpegEvent::OutputFrame(f) = ev
+            && let Ok(mut s) = strip.lock()
+        {
+            s.frames.push(Frame {
+                width: f.width as usize,
+                height: f.height as usize,
+                rgb: f.data,
+            });
         }
     }
     kill(child);
