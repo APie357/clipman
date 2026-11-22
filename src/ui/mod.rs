@@ -234,6 +234,11 @@ impl App {
         let mut cmd = None;
         egui::TopBottomPanel::top("menu").show(ctx, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
+                // square corners on File / Help
+                let w = &mut ui.visuals_mut().widgets;
+                for v in [&mut w.inactive, &mut w.hovered, &mut w.active, &mut w.open] {
+                    v.corner_radius = egui::CornerRadius::ZERO;
+                }
                 let item = |ui: &mut egui::Ui, enabled: bool, text: &str, sc: Option<egui::KeyboardShortcut>| {
                     let mut b = egui::Button::new(text);
                     if let Some(sc) = sc {
