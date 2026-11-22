@@ -248,7 +248,7 @@ impl Editor {
             } else {
                 "exact start".into()
             };
-            return format!("{span}   ({:.1}s, original quality, {note})", e - k);
+            return format!("{span}   ({:.1}s, source, {note})", e - k);
         }
         let len = (e - s).max(0.001);
         match p.limit_mb() {

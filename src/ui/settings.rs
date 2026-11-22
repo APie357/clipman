@@ -307,7 +307,7 @@ impl SettingsUi {
             if ui.button("Add compress preset").clicked() {
                 self.add_preset(PresetKind::Compress);
             }
-            if ui.button("Add original-quality preset").on_hover_text("Just trims: copies the video untouched").clicked() {
+            if ui.button("Add source preset").on_hover_text("Just trims: copies the video as-is, no re-encoding").clicked() {
                 self.add_preset(PresetKind::Original);
             }
             #[cfg(target_os = "linux")]

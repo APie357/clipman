@@ -385,7 +385,7 @@ fn render_original(
         end - k,
         0.0,
         1.0,
-        "Trimming (original quality)",
+        "Trimming (source)",
         progress,
         cancel,
     )

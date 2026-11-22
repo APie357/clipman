@@ -51,7 +51,7 @@ also returns to the browser after saving.
   actual mix, with noise suppression once its model is downloaded.
 - **Preset** dropdown: every preset from Settings. Compress presets fit the clip under
   their max size (two-pass x264), or use a fixed high quality (CRF 20) when they have no
-  max size. *Original quality* copies the video without re-encoding; its start snaps to the
+  max size. *Source* presets copy the video without re-encoding; its start snaps to the
   keyframe at or before the start handle (GSR writes one every ~2 s), and the summary shows
   where it will actually start.
 - **Save** renders with a progress bar in the window (Cancel stops it). The editor closes
@@ -68,7 +68,7 @@ Stored as JSON in `~/.config/clipman/settings.json` (Windows: `%APPDATA%\clipman
 - **Noise suppression strength** 0–100% (blends the original back in; 0% = off).
 - **File name prefix**.
 - **Quality presets**: name (blank shows as e.g. `720p60`), max height, max fps, max size in
-  MB (blank = no limit), file suffix. Add compress or original-quality presets; any preset can
+  MB (blank = no limit), file suffix. Add compress or source presets; any preset can
   be removed. Clips are never upscaled.
 - **Regenerate right-click menu** (Linux): rewrites the *Clipman* submenu in Thunar from the
   presets (one entry per compress preset, plus *Open in Clipman…*), keeping your other custom

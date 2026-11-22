@@ -67,7 +67,7 @@ impl Preset {
         if !name.is_empty() {
             name.to_string()
         } else if self.is_original() {
-            "Original quality".into()
+            "Source".into()
         } else {
             self.resolution()
         }
@@ -83,7 +83,7 @@ impl Preset {
     /// Text for dropdowns / menus, e.g. "720p60 · 20 MB" or "Sharp (1080p30 · no size limit)".
     pub fn menu_text(&self) -> String {
         if self.is_original() {
-            return format!("{} (just trim, no compression)", self.label());
+            return self.label();
         }
         let (label, res) = (self.label(), self.resolution());
         if label == res {
@@ -209,7 +209,7 @@ pub fn default_presets() -> Vec<Preset> {
         Preset {
             id: "original".into(),
             kind: PresetKind::Original,
-            name: "Original quality".into(),
+            name: String::new(),
             height: 0,
             fps: 0,
             max_mb: None,
@@ -344,10 +344,7 @@ mod tests {
     fn labels() {
         let p = &default_presets();
         assert_eq!(p[0].menu_text(), "720p60 · 20 MB");
-        assert_eq!(
-            p[2].menu_text(),
-            "Original quality (just trim, no compression)"
-        );
+        assert_eq!(p[2].menu_text(), "Source");
         let mut named = p[1].clone();
         named.name = "Sharp".into();
         named.max_mb = None;
@@ -359,7 +356,7 @@ mod tests {
         let old = r#"{"denoise_strength": 60, "output_prefix": "x_", "presets": [
             {"id":"primary","type":"compress","name":"","height":720,"fps":60,"max_mb":8.5,"suffix":""},
             {"id":"custom-1","type":"compress","name":"","height":1080,"fps":60,"max_mb":null,"suffix":"_hq"},
-            {"id":"original","type":"original","name":"Original quality","suffix":""}],
+            {"id":"original","type":"original","name":"","suffix":""}],
             "tracks": {"Voice": {"label":"Mic","default":true,"denoise":"on"}}}"#;
         let s: Settings = serde_json::from_str(old).unwrap();
         assert_eq!(s.denoise_strength, 60);
