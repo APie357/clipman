@@ -99,6 +99,12 @@ downloads `lq.rnnn` ("leavened-quisling", voice vs. general noise, ≈300 KB) fr
 [GregorR/rnnoise-models](https://github.com/GregorR/rnnoise-models), pinned to a commit and
 checked against a SHA-256, and caches it in `~/.cache/clipman/`.
 
+## Downloads
+
+Prebuilt binaries are on the [releases page](https://github.com/APie357/clipman/releases):
+a Linux AppImage and tarball, and a zipped Windows `.exe`. ffmpeg isn't included; clipman
+uses the installed one or downloads it on first run (see below).
+
 ## Building and installing
 
 Needs Rust (stable) and ffmpeg + ffprobe. clipman looks for them next to its executable, then
@@ -120,11 +126,10 @@ The opt-in extras live in `extras/`.
 **Arch Linux package:** `packaging/arch/PKGBUILD` builds `clipman-video-git` from the latest
 commit on GitHub. It's not called `clipman`, because the AUR's `clipman` / `clipman-git` are an
 unrelated Wayland clipboard manager, which also installs `/usr/bin/clipman`, so the two
-conflict. The repo is private and makepkg ignores `~/.gitconfig`, so pass it for the GitHub
-credentials:
+conflict.
 
 ```sh
-cd packaging/arch && MAKEPKG_GIT_CONFIG=~/.gitconfig makepkg -si
+cd packaging/arch && makepkg -si
 clipman --write-menu          # per user, if you want the Thunar right-click entries
 ```
 

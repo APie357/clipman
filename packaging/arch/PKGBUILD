@@ -1,9 +1,8 @@
 # Maintainer: APie357
 # SPDX-License-Identifier: Apache-2.0
 #
-# Builds the latest commit of clipman from GitHub. The repo is private and makepkg
-# ignores ~/.gitconfig, so pass your git config for the GitHub credentials:
-#   MAKEPKG_GIT_CONFIG=~/.gitconfig makepkg -si
+# Builds the latest commit of clipman from GitHub:
+#   makepkg -si
 #
 # Named clipman-video-git because "clipman" / "clipman-git" in the AUR are an unrelated
 # Wayland clipboard manager that also installs /usr/bin/clipman.

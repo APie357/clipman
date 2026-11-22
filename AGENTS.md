@@ -63,15 +63,15 @@ Notes for coding agents working on clipman. Read README.md first for what it doe
   unrelated `clipman` clipboard manager, and it declares `conflicts` with it because both ship
   `/usr/bin/clipman`). Needs `options=('!lto')`: makepkg's LTO makes `ring`'s C objects
   unlinkable by rust-lld. `--remap-path-prefix` keeps `$srcdir` out of the binary. Test with
-  `MAKEPKG_GIT_CONFIG=~/.gitconfig makepkg -f` (makepkg ignores the global git config, and the
-  repo is private). If dynamic libraries change, re-check `depends` against `ldd` plus the
-  dlopened Wayland/X11/GL libs.
+  `makepkg -f` (it builds the latest commit pushed to GitHub, not the working tree). If
+  dynamic libraries change, re-check `depends` against `ldd` plus the dlopened
+  Wayland/X11/GL libs.
 - `scripts/build-appimage.sh`: AppImage via linuxdeploy (downloaded to `target/tools`,
   run with `APPIMAGE_EXTRACT_AND_RUN=1` so no FUSE is needed). ffmpeg isn't bundled.
 - `.github/workflows/build.yml`: Linux (ubuntu-22.04 for an old glibc baseline: tests, the
   AppImage and a tarball) and Windows (tests, a zipped exe) on push/PR; `v*` tags also publish
-  a release. The repo is private, so runs use the account's Actions minutes (Windows minutes
-  count double).
+  a release. The repo is public, so Actions minutes are free. Workflows from forks' pull
+  requests get a read-only token; only the tag-triggered release job can write.
 - `scripts/install.sh`: Linux installer. `--hyprland` / `--gsr` are opt-in. `extras/` holds
   the Hyprland rule, the desktop entry and the GSR config snapshot (`@HOME@` placeholders).
 
