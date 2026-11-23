@@ -73,6 +73,15 @@ impl Host {
     pub fn has_badges(&self) -> bool {
         false
     }
+    pub fn changes(&self) -> u64 {
+        0
+    }
+    pub fn browser_filters(&mut self, _: &[PathBuf]) -> Vec<BrowserFilter> {
+        Vec::new()
+    }
+    pub fn filter_matches(&mut self, _: &str, _: &str, _: &Path, _: &str) -> bool {
+        true
+    }
     pub fn draw_windows(&mut self, _: &egui::Context, _: &Ctx) {}
     pub fn has_open_windows(&self) -> bool {
         false

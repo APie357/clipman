@@ -246,6 +246,9 @@ impl Default for TrackCfg {
 fn d_strength() -> u8 {
     100
 }
+fn d_card_size() -> u32 {
+    256
+}
 fn d_prefix() -> String {
     "remuxed_".into()
 }
@@ -295,6 +298,9 @@ pub struct Settings {
     /// Per plugin (keyed by its folder name): on/off and the values of its settings.
     #[serde(default)]
     pub plugins: IndexMap<String, PluginCfg>,
+    /// Width of the clip browser's cards, in points (the slider in its top bar).
+    #[serde(default = "d_card_size")]
+    pub card_size: u32,
 }
 
 /// A plugin's entry in the settings. Plugins without one are enabled.
@@ -329,6 +335,7 @@ impl Default for Settings {
             presets: d_presets(),
             tracks: d_tracks(),
             plugins: IndexMap::new(),
+            card_size: d_card_size(),
         }
     }
 }

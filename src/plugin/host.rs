@@ -33,6 +33,9 @@ struct Shared {
     clips_folder: PathBuf,
     export_folder: PathBuf,
     gui: bool,
+    /// Bumped when what badges and browser filters show may have changed (plugins
+    /// loaded or stopped, settings or metadata written).
+    changes: u64,
 }
 
 struct SpawnReq {
@@ -92,6 +95,19 @@ struct WindowDef {
     open: bool,
 }
 
+struct FilterDef {
+    id: String,
+    label: String,
+    options: FilterOptions,
+    matches: Function,
+}
+
+enum FilterOptions {
+    List(Vec<String>),
+    /// Called with the browser's clip paths.
+    Func(Function),
+}
+
 struct ActionDef {
     id: String,
     label: String,
@@ -126,6 +142,7 @@ struct Plugin {
     windows: Vec<WindowDef>,
     settings: Vec<SettingDef>,
     actions: Vec<ActionDef>,
+    filters: Vec<FilterDef>,
     hooks: Hooks,
 }
 
@@ -201,6 +218,7 @@ impl Host {
             }
             self.plugins.push(p);
         }
+        self.shared.borrow_mut().changes += 1;
         self.flush();
     }
 
@@ -219,6 +237,7 @@ impl Host {
             return;
         }
         self.set_folders(settings);
+        self.shared.borrow_mut().changes += 1;
         for p in &mut self.plugins {
             let cfg = settings.plugins.get(&p.id);
             if let Some(lua) = &p.lua
@@ -501,6 +520,62 @@ impl Host {
         self.live().any(|(_, p)| p.hooks.badge.is_some())
     }
 
+    /// Changes whenever badges or browser filters may show something else; the browser
+    /// asks again when it does.
+    pub fn changes(&self) -> u64 {
+        self.shared.borrow().changes
+    }
+
+    /// The filters plugins add to the browser, with their options for these clips.
+    pub fn browser_filters(&mut self, clips: &[PathBuf]) -> Vec<BrowserFilter> {
+        let mut out = Vec::new();
+        for pi in 0..self.plugins.len() {
+            for fi in 0..self.plugins[pi].filters.len() {
+                let r = self.call(pi, CALL_BUDGET, |lua, p| {
+                    let f = &p.filters[fi];
+                    let options = match &f.options {
+                        FilterOptions::List(l) => l.clone(),
+                        FilterOptions::Func(func) => {
+                            let list =
+                                lua.create_sequence_from(clips.iter().map(|c| path_string(c)))?;
+                            func.call::<Option<Vec<String>>>(list)?.unwrap_or_default()
+                        }
+                    };
+                    let mut seen = std::collections::HashSet::new();
+                    let options = options
+                        .into_iter()
+                        .filter(|o| !o.trim().is_empty() && seen.insert(o.clone()))
+                        .collect();
+                    Ok(BrowserFilter {
+                        plugin_id: p.id.clone(),
+                        id: f.id.clone(),
+                        label: f.label.clone(),
+                        options,
+                    })
+                });
+                out.extend(r);
+            }
+        }
+        out
+    }
+
+    /// Whether `clip` passes a plugin's browser filter set to `option`. A plugin that
+    /// stopped lets everything through.
+    pub fn filter_matches(&mut self, plugin_id: &str, id: &str, clip: &Path, option: &str) -> bool {
+        let Some(pi) = self.plugins.iter().position(|p| p.id == plugin_id) else {
+            return true;
+        };
+        let Some(fi) = self.plugins[pi].filters.iter().position(|f| f.id == id) else {
+            return true;
+        };
+        self.call(pi, DRAW_BUDGET, |_, p| {
+            p.filters[fi]
+                .matches
+                .call::<bool>((path_string(clip), option))
+        })
+        .unwrap_or(true)
+    }
+
     /// Draw the plugin windows that are open.
     pub fn draw_windows(&mut self, ectx: &egui::Context, ctx: &Ctx) {
         for pi in 0..self.plugins.len() {
@@ -704,6 +779,7 @@ impl Plugin {
             windows: Vec::new(),
             settings: Vec::new(),
             actions: Vec::new(),
+            filters: Vec::new(),
             hooks: Hooks::default(),
         }
     }
@@ -826,10 +902,11 @@ impl Plugin {
             Err(e) => {
                 let msg = error_text(&e);
                 eprintln!("clipman: plugin {} stopped: {msg}", self.id);
-                shared
-                    .borrow_mut()
-                    .notices
+                let mut sh = shared.borrow_mut();
+                sh.notices
                     .push(format!("Plugin {} stopped: {msg}", self.name));
+                sh.changes += 1;
+                drop(sh);
                 self.error = Some(msg);
                 // its windows go away with it
                 for w in &mut self.windows {
@@ -993,6 +1070,24 @@ impl Plugin {
                 label: get(&b, &w, "label")?,
                 file_manager: get::<Option<bool>>(&b, &w, "file_manager")?.unwrap_or(false),
                 run: get(&b, &w, "run")?,
+            });
+        }
+        for (i, b) in list(t, "browser_filters")?.into_iter().enumerate() {
+            let w = format!("browser_filters[{}]", i + 1);
+            let id: String = get(&b, &w, "id")?;
+            if !valid_id(&id) {
+                bail!("{w}.id: use lowercase letters, digits, - and _ only");
+            }
+            let options = match get::<Value>(&b, &w, "options")? {
+                Value::Function(f) => FilterOptions::Func(f),
+                Value::Nil => bail!("{w}.options: missing (a list, or a function returning one)"),
+                _ => FilterOptions::List(get(&b, &w, "options")?),
+            };
+            self.filters.push(FilterDef {
+                label: get::<Option<String>>(&b, &w, "label")?.unwrap_or_else(|| id.clone()),
+                id,
+                options,
+                matches: get(&b, &w, "match")?,
             });
         }
         self.hooks = Hooks {
@@ -1345,11 +1440,12 @@ fn install_api(lua: &Lua, id: &str, dir: &Path, shared: Rc<RefCell<Shared>>) -> 
             )
         })?,
     )?;
-    let pid = id.to_string();
+    let (pid, sh) = (id.to_string(), shared.clone());
     meta.set(
         "set",
         lua.create_function(move |_, (path, v): (String, Value)| {
             let v = if v.is_nil() { None } else { Some(json_of(v)?) };
+            sh.borrow_mut().changes += 1;
             super::meta::write(Path::new(&path), &pid, v).map_err(mlua::Error::external)
         })?,
     )?;
@@ -1822,6 +1918,53 @@ mod tests {
         assert!(!super::super::meta::sidecar_path(&clip).exists());
         assert!(h.infos().iter().all(|i| i.error.is_none()));
         std::fs::remove_dir_all(tmp).unwrap();
+    }
+
+    #[test]
+    fn browser_filters() {
+        let (mut h, dir) = host_with(
+            "flt",
+            r#"
+            local tagged = {}
+            return {
+              browser_filters = {
+                { id = "kind", label = "Kind", options = { "a", "b", "a", "" },
+                  match = function(path, opt) return path:sub(-5) == opt .. ".mp4" end },
+                { id = "dyn", options = function(paths) return { #paths .. " clips" } end,
+                  match = function(path, opt) return true end },
+                { id = "bad", options = {}, match = function() error("boom") end },
+              },
+              menus = { { title = "T", items = { { label = "Tag", run = function()
+                clipman.meta.set(clipman.plugin_dir .. "/x.mp4", { t = 1 })
+              end } } } },
+            }
+            "#,
+        );
+        let clips = [PathBuf::from("/c/a.mp4"), PathBuf::from("/c/b.mp4")];
+        let f = h.browser_filters(&clips);
+        assert_eq!(f.len(), 3);
+        assert_eq!(
+            (f[0].label.as_str(), f[0].options.clone()),
+            ("Kind", vec!["a".into(), "b".into()])
+        );
+        assert_eq!(
+            (f[1].label.as_str(), f[1].options.clone()),
+            ("dyn", vec!["2 clips".into()])
+        );
+        assert!(h.filter_matches("flt", "kind", &clips[0], "a"));
+        assert!(!h.filter_matches("flt", "kind", &clips[1], "a"));
+        assert!(h.filter_matches("nope", "kind", &clips[1], "a")); // unknown: no filtering
+        // writing metadata tells the browser to ask again
+        let before = h.changes();
+        h.run_menu(0, 0, &Ctx::default());
+        assert!(h.changes() > before);
+        // an error stops the plugin; its filters let everything through
+        let before = h.changes();
+        assert!(h.filter_matches("flt", "bad", &clips[0], "x"));
+        assert!(h.changes() > before);
+        assert!(h.browser_filters(&clips).is_empty());
+        assert!(h.filter_matches("flt", "kind", &clips[1], "a"));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

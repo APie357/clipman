@@ -87,6 +87,26 @@ return {
     if g and g ~= "" then return g end
   end,
 
+  -- a "Game" dropdown in the browser's top bar: the games of the listed clips
+  browser_filters = {
+    {
+      id = "game", label = "Game",
+      options = function(paths)
+        local games, seen = {}, {}
+        for _, p in ipairs(paths) do
+          local g = tags_of(p).game
+          if g and g ~= "" and not seen[g] then
+            seen[g] = true
+            games[#games + 1] = g
+          end
+        end
+        table.sort(games)
+        return games
+      end,
+      match = function(path, game) return tags_of(path).game == game end,
+    },
+  },
+
   -- exports carry the source's tags (in the clipman tag, as plugins["game-tags"])
   on_export_start = function(job)
     local t = clipman.meta.get(job.src)

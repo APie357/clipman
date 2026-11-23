@@ -10,12 +10,19 @@ use std::time::SystemTime;
 
 use eframe::egui::{self, Color32, Vec2};
 
-use crate::plugin::{ClipAction, Host};
+use crate::plugin::{BrowserFilter, ClipAction, Host};
 use crate::settings::{Settings, cache_dir};
 
 const EXTENSIONS: [&str; 4] = super::VIDEO_EXTENSIONS;
-const THUMB_W: f32 = 256.0;
-const THUMB_H: f32 = 144.0;
+/// Width of the cached thumbnails: the biggest cards, with some to spare.
+const THUMB_PX: u32 = 512;
+/// Card widths the size slider offers.
+pub const CARD_MIN: f32 = 160.0;
+pub const CARD_MAX: f32 = 480.0;
+/// Space between cards.
+const GAP: f32 = 12.0;
+/// Below the thumbnail: name and date lines.
+const CARD_TEXT_H: f32 = 46.0;
 const THUMB_WORKERS: usize = 2;
 /// Plugin badge callbacks run per clip; spread them over frames.
 const BADGES_PER_FRAME: usize = 8;
@@ -25,6 +32,8 @@ pub enum Action {
     Open(PathBuf),
     /// A plugin action from a card's right-click menu.
     Plugin(ClipAction, PathBuf),
+    /// The card size slider was let go at this width: save it.
+    CardSize(u32),
 }
 
 enum CardClick {
@@ -55,6 +64,15 @@ pub struct Browser {
     badges: HashMap<PathBuf, Vec<String>>,
     /// The list was re-read and plugins haven't been told yet.
     refreshed: bool,
+    /// Card (thumbnail) width.
+    card_w: f32,
+    /// Filters plugins added, asked for again when `Host::changes` moves.
+    filters: Vec<BrowserFilter>,
+    /// Chosen option per plugin filter, by (plugin id, filter id); none = any.
+    filter_sel: HashMap<(String, String), String>,
+    /// Whether each clip passes the chosen plugin filters.
+    passes: HashMap<PathBuf, bool>,
+    seen_changes: Option<u64>,
 }
 
 impl Browser {
@@ -73,6 +91,11 @@ impl Browser {
             workers_started: false,
             badges: HashMap::new(),
             refreshed: false,
+            card_w: (settings.card_size as f32).clamp(CARD_MIN, CARD_MAX),
+            filters: Vec::new(),
+            filter_sel: HashMap::new(),
+            passes: HashMap::new(),
+            seen_changes: None,
         };
         b.refresh();
         b
@@ -88,6 +111,7 @@ impl Browser {
     pub fn refresh(&mut self) {
         self.error = None;
         self.badges.clear();
+        self.passes.clear();
         self.refreshed = true;
         self.clips = match std::fs::read_dir(&self.folder) {
             Ok(rd) => rd
@@ -149,16 +173,15 @@ impl Browser {
 
     pub fn ui(&mut self, ctx: &egui::Context, plugins: &mut Host) -> Action {
         self.start_workers(ctx);
-        if std::mem::take(&mut self.refreshed) {
-            let paths: Vec<PathBuf> = self.clips.iter().map(|c| c.path.clone()).collect();
-            plugins.browser_refresh(&paths);
-        }
+        self.sync_plugins(plugins);
         let actions = plugins.clip_actions();
         while let Ok((path, img)) = self.thumb_rx.try_recv() {
             match img {
                 Some(img) => {
-                    let tex =
-                        ctx.load_texture(path.to_string_lossy(), img, egui::TextureOptions::LINEAR);
+                    // mipmaps: small cards show the 512 px thumbnail scaled well down
+                    let opts = egui::TextureOptions::LINEAR
+                        .with_mipmap_mode(Some(egui::TextureFilter::Linear));
+                    let tex = ctx.load_texture(path.to_string_lossy(), img, opts);
                     self.thumbs.insert(path, tex);
                 }
                 None => {
@@ -170,8 +193,7 @@ impl Browser {
         egui::TopBottomPanel::top("browser_top").show(ctx, |ui| {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
-                ui.heading("Clips");
-                ui.weak(self.folder.display().to_string());
+                // controls from the right; the heading and folder get what's left
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.button("Refresh").clicked() {
                         self.refresh();
@@ -199,6 +221,26 @@ impl Browser {
                             .hint_text("Filter")
                             .vertical_align(egui::Align::Center),
                     );
+                    if self.plugin_filter_combos(ui) {
+                        self.passes.clear();
+                    }
+                    let size = ui
+                        .add(
+                            egui::Slider::new(&mut self.card_w, CARD_MIN..=CARD_MAX)
+                                .show_value(false),
+                        )
+                        .on_hover_text("Card size");
+                    if size.drag_stopped() || (size.changed() && !size.dragged()) {
+                        action = Action::CardSize(self.card_w.round() as u32);
+                    }
+                    ui.weak("Size");
+                    ui.add_space(8.0);
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        ui.heading("Clips");
+                        let folder = self.folder.display().to_string();
+                        ui.add(egui::Label::new(egui::RichText::new(&folder).weak()).truncate())
+                            .on_hover_text(folder);
+                    });
                 });
             });
             ui.add_space(2.0);
@@ -210,11 +252,22 @@ impl Browser {
                 return;
             }
             let needle = self.filter.to_lowercase();
-            let shown: Vec<&Clip> = self
+            let mut shown: Vec<&Clip> = self
                 .clips
                 .iter()
                 .filter(|c| needle.is_empty() || c.name.to_lowercase().contains(&needle))
                 .collect();
+            if !self.filter_sel.is_empty() {
+                for c in &shown {
+                    if !self.passes.contains_key(&c.path) {
+                        let ok = self.filter_sel.iter().all(|((pid, fid), opt)| {
+                            plugins.filter_matches(pid, fid, &c.path, opt)
+                        });
+                        self.passes.insert(c.path.clone(), ok);
+                    }
+                }
+                shown.retain(|c| self.passes.get(&c.path).copied().unwrap_or(true));
+            }
             if plugins.has_badges() {
                 let missing: Vec<PathBuf> = shown
                     .iter()
@@ -241,37 +294,112 @@ impl Browser {
             egui::ScrollArea::vertical()
                 .auto_shrink(false)
                 .show(ui, |ui| {
-                    ui.horizontal_wrapped(|ui| {
-                        ui.spacing_mut().item_spacing = Vec2::new(12.0, 12.0);
-                        for c in shown {
-                            match self.card(ui, c, &actions) {
+                    ui.spacing_mut().item_spacing = Vec2::new(GAP, GAP);
+                    let w = self.card_w;
+                    let card = Vec2::new(w, self.thumb_h() + CARD_TEXT_H);
+                    let avail = ui.available_width();
+                    let cols = (((avail + GAP) / (w + GAP)).floor() as usize).max(1);
+                    let used = cols as f32 * w + (cols - 1) as f32 * GAP;
+                    // centred as a grid: a short last row stays in its columns
+                    let pad = ((avail - used) / 2.0).max(0.0);
+                    for row in shown.chunks(cols) {
+                        let (row_rect, _) =
+                            ui.allocate_exact_size(Vec2::new(avail, card.y), egui::Sense::hover());
+                        if !ui.is_rect_visible(row_rect) {
+                            continue;
+                        }
+                        for (i, c) in row.iter().enumerate() {
+                            let min = row_rect.min + Vec2::new(pad + i as f32 * (w + GAP), 0.0);
+                            let rect = egui::Rect::from_min_size(min, card);
+                            match self.card(ui, rect, c, &actions) {
                                 CardClick::None => {}
                                 CardClick::Open => action = Action::Open(c.path.clone()),
-                                CardClick::Plugin(a) => {
-                                    action = Action::Plugin(a, c.path.clone())
-                                }
+                                CardClick::Plugin(a) => action = Action::Plugin(a, c.path.clone()),
                             }
                         }
-                    });
+                    }
                 });
         });
         action
     }
 
-    /// One clip card: click opens it, right-click shows plugin actions.
-    fn card(&self, ui: &mut egui::Ui, c: &Clip, actions: &[ClipAction]) -> CardClick {
-        let (rect, resp) =
-            ui.allocate_exact_size(Vec2::new(THUMB_W, THUMB_H + 46.0), egui::Sense::click());
-        if !ui.is_rect_visible(rect) {
-            return CardClick::None;
+    fn thumb_h(&self) -> f32 {
+        (self.card_w * 9.0 / 16.0).round()
+    }
+
+    /// Tell plugins about a new listing, and ask them again for badges and filters when
+    /// they (or their data) changed.
+    fn sync_plugins(&mut self, plugins: &mut Host) {
+        let refreshed = std::mem::take(&mut self.refreshed);
+        let paths: Vec<PathBuf> = self.clips.iter().map(|c| c.path.clone()).collect();
+        if refreshed {
+            plugins.browser_refresh(&paths);
         }
+        if !refreshed && self.seen_changes == Some(plugins.changes()) {
+            return;
+        }
+        self.badges.clear();
+        self.passes.clear();
+        self.filters = plugins.browser_filters(&paths);
+        // keep choices whose option is still there
+        let filters = &self.filters;
+        self.filter_sel.retain(|(pid, fid), opt| {
+            filters
+                .iter()
+                .any(|f| &f.plugin_id == pid && &f.id == fid && f.options.contains(opt))
+        });
+        self.seen_changes = Some(plugins.changes());
+    }
+
+    /// A dropdown per plugin filter (in a right-to-left layout). True if a choice changed.
+    fn plugin_filter_combos(&mut self, ui: &mut egui::Ui) -> bool {
+        let mut changed = false;
+        for f in self.filters.iter().rev() {
+            let key = (f.plugin_id.clone(), f.id.clone());
+            let mut sel = self.filter_sel.get(&key).cloned();
+            let text = match &sel {
+                Some(o) => format!("{}: {}", f.label, elide(o, 24)),
+                None => format!("{}: any", f.label),
+            };
+            egui::ComboBox::from_id_salt(("plugin-filter", &f.plugin_id, &f.id))
+                .selected_text(text)
+                .show_ui(ui, |ui| {
+                    super::menu_style(ui);
+                    changed |= ui.selectable_value(&mut sel, None, "Any").changed();
+                    for o in &f.options {
+                        changed |= ui
+                            .selectable_value(&mut sel, Some(o.clone()), o.as_str())
+                            .changed();
+                    }
+                    if f.options.is_empty() {
+                        ui.weak("Nothing to choose from");
+                    }
+                });
+            match sel {
+                Some(o) => self.filter_sel.insert(key, o),
+                None => self.filter_sel.remove(&key),
+            };
+        }
+        changed
+    }
+
+    /// One clip card in `rect`: click opens it, right-click shows plugin actions.
+    fn card(
+        &self,
+        ui: &mut egui::Ui,
+        rect: egui::Rect,
+        c: &Clip,
+        actions: &[ClipAction],
+    ) -> CardClick {
+        let resp = ui.interact(rect, ui.id().with(&c.path), egui::Sense::click());
         let p = ui.painter();
-        let img = egui::Rect::from_min_size(rect.min, Vec2::new(THUMB_W, THUMB_H));
+        let (tw, th) = (self.card_w, self.thumb_h());
+        let img = egui::Rect::from_min_size(rect.min, Vec2::new(tw, th));
         p.rect_filled(img, 6.0, Color32::from_gray(20));
         match self.thumbs.get(&c.path) {
             Some(t) => {
                 let s = t.size_vec2();
-                let fit = (THUMB_W / s.x).min(THUMB_H / s.y);
+                let fit = (tw / s.x).min(th / s.y);
                 let r = egui::Rect::from_center_size(img.center(), s * fit);
                 p.image(
                     t.id(),
@@ -305,7 +433,7 @@ impl Browser {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         }
         let text_color = ui.visuals().text_color();
-        let name = elide(&c.name, 34);
+        let name = elide(&c.name, (tw / 7.5) as usize);
         p.text(
             img.left_bottom() + Vec2::new(2.0, 6.0),
             egui::Align2::LEFT_TOP,
@@ -341,6 +469,7 @@ impl Browser {
         }
         let mut click = CardClick::None;
         resp.context_menu(|ui| {
+            super::menu_style(ui);
             if ui.button("Open").clicked() {
                 click = CardClick::Open;
             }
@@ -364,7 +493,10 @@ fn elide(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_string()
     } else {
-        format!("{}…", s.chars().take(max - 1).collect::<String>())
+        format!(
+            "{}…",
+            s.chars().take(max.saturating_sub(1)).collect::<String>()
+        )
     }
 }
 
@@ -443,7 +575,7 @@ fn load_or_make_thumb(clip: &Path, cache: &Path) -> Option<egui::ColorImage> {
                 .input(clip)
                 .frames(1)
                 .no_audio()
-                .args(["-vf", &format!("scale={}:-2", THUMB_W as u32 * 2)]);
+                .args(["-vf", &format!("scale={THUMB_PX}:-2")]);
             cmd.args(["-q:v", "4"]).overwrite().output(cache);
             if let Ok(mut child) = cmd.spawn() {
                 if let Ok(iter) = child.iter() {

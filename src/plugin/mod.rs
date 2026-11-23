@@ -141,6 +141,16 @@ impl ClipAction {
     }
 }
 
+/// A filter a plugin adds to the clip browser's top bar: a dropdown of options, and
+/// clips shown only when they match the one chosen.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BrowserFilter {
+    pub plugin_id: String,
+    pub id: String,
+    pub label: String,
+    pub options: Vec<String>,
+}
+
 /// A setting a plugin declares; the Settings dialog draws it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SettingDef {

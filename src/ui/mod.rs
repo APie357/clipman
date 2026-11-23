@@ -766,6 +766,15 @@ impl eframe::App for App {
                             self.notice = Some((e, std::time::Instant::now()));
                         }
                     }
+                    browser::Action::CardSize(w) => {
+                        self.settings.card_size = w;
+                        if let Err(e) = self.settings.save() {
+                            self.notice = Some((
+                                format!("Couldn't save settings: {e}"),
+                                std::time::Instant::now(),
+                            ));
+                        }
+                    }
                     browser::Action::None => {}
                 }
             }

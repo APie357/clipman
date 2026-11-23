@@ -66,7 +66,9 @@ Notes for coding agents working on clipman. Read README.md first for what it doe
   `meta.rs` is the source-clip sidecar `<clip>.clipman.json`. `docs/plugins.md` is the API
   reference; `examples/plugins` are tested by `examples_load`. Plugin clip actions with
   `file_manager = true` become `clipman-plugin-<plugin>-<id>` Thunar entries and numbered
-  Explorer subkeys running `--plugin-action`.
+  Explorer subkeys running `--plugin-action`. Badges and `browser_filters` are cached by
+  the browser and asked for again when `Host::changes()` moves (plugins loaded, stopped or
+  given new settings, or any `clipman.meta.set`).
 - `src/update.rs`: update checker (`update-check` cargo feature, default on; the PKGBUILD
   builds without it). GUI windows only, never CLI renders: one GitHub `releases/latest`
   request a day, cached with the dismissed version in `<cache>/update-check.json`. The UI
@@ -79,7 +81,9 @@ Notes for coding agents working on clipman. Read README.md first for what it doe
   a `SubCommands` cascade with numbered subkeys because Explorer sorts them by name). Only
   that `clipman` key is ever written or deleted.
 - `src/ui/`: eframe app. `mod.rs` (screens, the File/Help menu bar and its shortcuts
-  (`MenuCmd`), the CLI render window), `browser.rs`, `editor.rs`,
+  (`MenuCmd`), the CLI render window), `browser.rs` (cards laid out in centred rows by
+  hand, width from the `card_size` setting / top-bar slider, 160 to 480; thumbnails are
+  cached 512 px wide, so no regeneration on resize), `editor.rs`,
   `settings.rs` (modal dialog), `plugins.rs` (the Plugins dialog: an Installed tab to turn
   plugins on/off plus a settings tab per plugin; opened from the Plugins menu or Settings'
   *Manage plugins…*, drawn over Settings, saves only `settings.plugins` and keeps Settings'

@@ -14,12 +14,13 @@ extra to install. A plugin can:
 - declare settings, which show up in the Settings dialog
 - show badges on the browser's clip cards and add right-click actions, also to Thunar's or
   Explorer's menu
+- add filters to the browser (e.g. by a tag the plugin stores)
 
 Working examples are in [`examples/plugins`](../examples/plugins):
 
 | Plugin | Shows |
 |---|---|
-| `game-tags` | a window, sidecar metadata, badges, export metadata and a title tag, settings |
+| `game-tags` | a window, sidecar metadata, badges, a browser filter, export metadata and a title tag, settings |
 | `bookmarks` | its own dropdown menu, timeline markers, setting the range, shortcuts, `on_clip_opened` |
 | `watermark` | an ffmpeg video filter (`drawtext`), choice and number settings |
 | `copy-after-export` | `on_export_done`, running a program, a file manager action |
@@ -63,6 +64,7 @@ return {
   windows = { ... },           -- see Windows
   clip_actions = { ... },      -- see Clip actions
   badge = function(path) ... end,
+  browser_filters = { ... },   -- see Browser filters
 
   on_clip_opened = function(clip, ctx) ... end,
   on_export_start = function(job) ... end,
@@ -79,7 +81,7 @@ use **Plugins → Reload plugins** (or *Reload* in Manage plugins). A plugin tha
 load is listed in Manage plugins with its error.
 
 Callbacks run on the UI thread, so they must be quick. One that runs longer than 2 seconds
-is stopped, or 250 ms for a window's `draw` and for `badge`. Loading `init.lua` gets
+is stopped, or 250 ms for a window's `draw`, `badge` and a filter's `match`. Loading `init.lua` gets
 5 seconds. For anything slow, such as uploads or other programs, use
 [`clipman.spawn`](#running-programs), which runs in the background and calls you back.
 
@@ -323,7 +325,28 @@ end
 ```
 
 Badges show on the clip's card in the browser. They're computed once per refresh (a few
-clips per frame), not every frame.
+clips per frame), not every frame, and again after any plugin calls `clipman.meta.set`.
+
+## Browser filters
+
+```lua
+browser_filters = {
+  { id = "game", label = "Game",
+    options = function(paths) return { "Apex", "CS2" } end,  -- or a list: { "Apex", "CS2" }
+    match = function(path, option) return (clipman.meta.get(path) or {}).game == option end },
+}
+```
+
+Each filter is a dropdown in the browser's top bar, next to the text filter: *Any*, then
+the options. When an option is chosen, only clips for which `match(path, option)` returns
+true are shown (together with the text filter and other plugins' filters). `options` is
+either a list or a function that gets the paths of the listed clips, so it can offer only
+what's there. Duplicates and empty strings are dropped.
+
+Like badges, options and matches are worked out when the browser lists its folder and
+again after a plugin writes metadata with `clipman.meta.set`, not every frame. `match` is
+called for every listed clip at once, so keep it quick (read the sidecar, compare).
+A plugin that stops lets every clip through its filters, and its dropdowns go away.
 
 ## The `clipman` table
 

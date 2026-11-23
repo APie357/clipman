@@ -116,10 +116,12 @@ impl PluginsUi {
             ui.add_space(4.0);
             self.tabs(ui);
             ui.separator();
-            let max_h = (ctx.content_rect().height() - 180.0).max(160.0);
+            // one height for every tab, so the dialog doesn't jump when switching
+            let h = (ctx.content_rect().height() - 180.0).clamp(160.0, 460.0);
             egui::ScrollArea::vertical()
-                .max_height(max_h)
-                .auto_shrink([false, true])
+                .min_scrolled_height(h)
+                .max_height(h)
+                .auto_shrink(false)
                 .show(ui, |ui| match self.tab.clone() {
                     Tab::Manager => self.manager(ui, &mut action),
                     Tab::Plugin(id) => self.plugin_tab(ui, &id),
@@ -164,18 +166,26 @@ impl PluginsUi {
 
     fn manager(&mut self, ui: &mut egui::Ui, action: &mut Option<Action>) {
         ui.horizontal(|ui| {
-            ui.weak(self.dir.display().to_string());
-            if ui.button("Open folder").clicked() {
-                let _ = std::fs::create_dir_all(&self.dir);
-                super::open_path(&self.dir);
-            }
-            if ui
-                .button("Reload")
-                .on_hover_text("Load the plugins again (after editing or adding one)")
-                .clicked()
-            {
-                *action = Some(Action::Reload);
-            }
+            // buttons from the right, the folder truncated in what's left (a long path
+            // would widen the dialog on this tab only)
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .button("Reload")
+                    .on_hover_text("Load the plugins again (after editing or adding one)")
+                    .clicked()
+                {
+                    *action = Some(Action::Reload);
+                }
+                if ui.button("Open folder").clicked() {
+                    let _ = std::fs::create_dir_all(&self.dir);
+                    super::open_path(&self.dir);
+                }
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    let dir = self.dir.display().to_string();
+                    ui.add(egui::Label::new(RichText::new(&dir).weak()).truncate())
+                        .on_hover_text(dir);
+                });
+            });
         });
         ui.weak(
             "Plugins run with your permissions, like a config file: only add ones you trust.",
