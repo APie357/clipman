@@ -203,11 +203,6 @@ impl PluginsUi {
                 if p.name != p.id {
                     ui.weak(format!("({})", p.id));
                 }
-                if self.has_tab(&p.id)
-                    && ui.small_button("Settings").clicked()
-                {
-                    self.tab = Tab::Plugin(p.id.clone());
-                }
             });
             ui.horizontal(|ui| {
                 ui.add_space(26.0); // under the name, past the checkbox
@@ -225,6 +220,16 @@ impl PluginsUi {
                         } else {
                             "Unloads when you apply."
                         });
+                    }
+                    if self.has_tab(&p.id) {
+                        ui.add_space(2.0);
+                        if ui
+                            .button("Settings")
+                            .on_hover_text(format!("Open the {} tab", p.name))
+                            .clicked()
+                        {
+                            self.tab = Tab::Plugin(p.id.clone());
+                        }
                     }
                 });
             });
