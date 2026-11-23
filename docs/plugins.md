@@ -11,7 +11,7 @@ extra to install. A plugin can:
 - add ffmpeg filters and options to exports
 - react to events: a clip opened, an export started or finished, the browser refreshed
 - add markers to the editor's timeline and set the trim range
-- declare settings, which show up in the Settings dialog
+- declare settings, which get their own tab in **Plugins → Manage plugins…**
 - show badges on the browser's clip cards and add right-click actions, also to Thunar's or
   Explorer's menu
 - add filters to the browser (e.g. by a tag the plugin stores)
@@ -202,7 +202,7 @@ end
 | `combo(id, selected, { "a", "b" })` | the selected option |
 | `progress(fraction, text?)`, `spinner()` | |
 | `horizontal(fn)`, `vertical(fn)`, `collapsing(title, fn)`, `scroll(fn, max_height?)` | |
-| `enabled(on, fn)` | (`fn`'s widgets are greyed out when `on` is false) |
+| `enabled(on, fn)` | (`fn`'s widgets are grayed out when `on` is false) |
 | `grid(id, columns?, fn)`, `end_row()` | aligned columns: call `end_row()` after each row |
 | `available_width()` | pixels |
 | `copy(text)` | copies text to the clipboard |
@@ -282,7 +282,7 @@ Notes:
 own namespace in it:
 
 ```lua
-clipman.meta.set(path, { game = "Apex" })  -- replaces this plugin's data (nil removes it)
+clipman.meta.set(path, { game = "Minecraft" })  -- replaces this plugin's data (nil removes it)
 local t = clipman.meta.get(path)           -- this plugin's data, or nil
 local all = clipman.meta.get_all(path)     -- every plugin's data, by plugin id
 ```
@@ -332,7 +332,7 @@ clips per frame), not every frame, and again after any plugin calls `clipman.met
 ```lua
 browser_filters = {
   { id = "game", label = "Game",
-    options = function(paths) return { "Apex", "CS2" } end,  -- or a list: { "Apex", "CS2" }
+    options = function(paths) return { "Minecraft", "CS2" } end,  -- or a list: { "Minecraft", "CS2" }
     match = function(path, option) return (clipman.meta.get(path) or {}).game == option end },
 }
 ```

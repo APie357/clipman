@@ -30,7 +30,7 @@ return {
     { key = "default_game", label = "Default game", default = "",
       help = "Filled in for clips that have no tag yet" },
     { key = "title_tag", label = "Write a title tag", type = "bool", default = true,
-      help = "Exports get a title like \"Apex: clutch 1v3\"" },
+      help = "Exports get a title like \"Minecraft: first diamond\"" },
   },
 
   menus = { { title = "Tags", screen = "editor", items = {
@@ -57,7 +57,7 @@ return {
         end
         ui:grid("tags", 2, function(ui)
           ui:label("Game")
-          editing.game = ui:text_edit(editing.game, { width = 240, hint = "e.g. Apex" })
+          editing.game = ui:text_edit(editing.game, { width = 240, hint = "e.g. Minecraft" })
           ui:end_row()
           ui:label("Notes")
           editing.notes = ui:text_edit(editing.notes, { width = 240, multiline = true })

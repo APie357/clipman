@@ -81,7 +81,7 @@ Notes for coding agents working on clipman. Read README.md first for what it doe
   a `SubCommands` cascade with numbered subkeys because Explorer sorts them by name). Only
   that `clipman` key is ever written or deleted.
 - `src/ui/`: eframe app. `mod.rs` (screens, the File/Help menu bar and its shortcuts
-  (`MenuCmd`), the CLI render window), `browser.rs` (cards laid out in centred rows by
+  (`MenuCmd`), the CLI render window), `browser.rs` (cards laid out in centered rows by
   hand, width from the `card_size` setting / top-bar slider, 160 to 480; thumbnails are
   cached 512 px wide, so no regeneration on resize), `editor.rs`,
   `settings.rs` (modal dialog), `plugins.rs` (the Plugins dialog: an Installed tab to turn

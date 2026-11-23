@@ -1578,7 +1578,7 @@ mod tests {
             local count = 0
             return {
               name = "Demo", version = "1.0", api = 1,
-              settings = { { key = "game", label = "Game", default = "Apex" } },
+              settings = { { key = "game", label = "Game", default = "Minecraft" } },
               menus = { { title = "Demo", screen = "editor", items = {
                 { label = "Mark", shortcut = "Ctrl+Shift+M",
                   run = function(ctx)
@@ -1613,7 +1613,7 @@ mod tests {
                 ClipCmd::AddMarker(Marker {
                     plugin: "demo".into(),
                     t: 3.5,
-                    label: "Apex".into(),
+                    label: "Minecraft".into(),
                     color: None
                 }),
                 ClipCmd::SetRange(1.0, 2.0)

@@ -300,7 +300,7 @@ impl Browser {
                     let avail = ui.available_width();
                     let cols = (((avail + GAP) / (w + GAP)).floor() as usize).max(1);
                     let used = cols as f32 * w + (cols - 1) as f32 * GAP;
-                    // centred as a grid: a short last row stays in its columns
+                    // centered as a grid: a short last row stays in its columns
                     let pad = ((avail - used) / 2.0).max(0.0);
                     for row in shown.chunks(cols) {
                         let (row_rect, _) =
