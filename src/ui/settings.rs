@@ -432,6 +432,26 @@ impl SettingsUi {
             ));
         });
         let mut remove = None;
+        // the Max height / Max fps fields all as wide as the widest value in their column
+        let (height_w, fps_w) = {
+            let font = egui::TextStyle::Button.resolve(ui.style());
+            let pad = 2.0 * ui.spacing().button_padding.x;
+            let width = |text: String| {
+                ui.painter()
+                    .layout_no_wrap(text, font.clone(), egui::Color32::WHITE)
+                    .size()
+                    .x
+                    + pad
+            };
+            let compress = self.draft.presets.iter().filter(|p| !p.is_original());
+            let widest = |f: &dyn Fn(&Preset) -> String| {
+                compress.clone().map(|p| width(f(p))).fold(0.0, f32::max)
+            };
+            (
+                widest(&|p| format!("{}p", p.height)),
+                widest(&|p| p.fps.to_string()),
+            )
+        };
         egui::Grid::new("presets")
             .striped(true)
             .spacing([10.0, 6.0])
@@ -466,12 +486,16 @@ impl SettingsUi {
                             ui.weak("—");
                         }
                     } else {
-                        ui.add(
+                        ui.add_sized(
+                            [height_w, super::CONTROL_HEIGHT],
                             egui::DragValue::new(&mut p.height)
                                 .range(144..=4320)
                                 .suffix("p"),
                         );
-                        ui.add(egui::DragValue::new(&mut p.fps).range(1..=240));
+                        ui.add_sized(
+                            [fps_w, super::CONTROL_HEIGHT],
+                            egui::DragValue::new(&mut p.fps).range(1..=240),
+                        );
                         ui.add_sized(
                             [90.0, super::CONTROL_HEIGHT],
                             egui::TextEdit::singleline(&mut row.max_mb)
