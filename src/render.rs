@@ -243,6 +243,21 @@ impl AudioPlan {
     }
 }
 
+/// The `-vf` chain: scaling to at most `height` (0 = keep the clip's), plugins' filters, then
+/// the GPU encoder's upload / format step. Empty when there's nothing to do.
+fn video_filter(height: u32, plugin_vf: &[String], hw_suffix: Option<&str>) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    let scale = format!("scale=-2:'min({height},ih)':flags=lanczos"); // never upscale
+    if height > 0 {
+        parts.push(&scale);
+    }
+    // software filters, so before the GPU upload
+    parts.extend(plugin_vf.iter().map(String::as_str));
+    // the suffix starts with a comma
+    parts.extend(hw_suffix.map(|s| s.trim_start_matches(',')));
+    parts.join(",")
+}
+
 /// Run every ffmpeg from the cache dir so `arnndn=m=lq.rnnn` resolves.
 pub fn ffmpeg() -> FfmpegCommand {
     let mut cmd = FfmpegCommand::new_with_path(media::ffmpeg_bin());
@@ -522,8 +537,8 @@ pub fn render(job: &Job, progress: Progress, cancel: &AtomicBool) -> Result<(Pat
     let x = &job.extra;
     if job.preset.is_original() && !(x.vf.is_empty() && x.af.is_empty()) {
         bail!(
-            "plugin filters ({}) can\u{2019}t be applied to a source preset (it copies the \
-             video without re-encoding)",
+            "plugin filters ({}) can\u{2019}t be applied with a preset that has no limits \
+             (it copies the video without re-encoding)",
             x.filter_plugins.join(", ")
         );
     }
@@ -665,14 +680,7 @@ fn encode(
     let p = &job.preset;
     let duration = end - start;
     let trimmed = start > 0.0 || end < info.duration;
-    let mut vf = format!("scale=-2:'min({},ih)':flags=lanczos", p.height); // never upscale
-    for f in &job.extra.vf {
-        vf += ",";
-        vf += f; // software filters, so before the GPU upload
-    }
-    if let Some(hw) = hw {
-        vf += hw.filter_suffix();
-    }
+    let vf = video_filter(p.height, &job.extra.vf, hw.map(|h| h.filter_suffix()));
     let on = if hw.is_some() { " on GPU" } else { "" };
     // input, scaling and frame rate (codec / rate control are added per mode)
     let base = |cmd: &mut FfmpegCommand| {
@@ -682,8 +690,13 @@ fn encode(
         if trimmed {
             trim(cmd, start, duration);
         }
-        cmd.input(&job.src).map("0:v:0").args(["-vf", vf.as_str()]);
-        cmd.args(["-fpsmax", &p.fps.to_string()]);
+        cmd.input(&job.src).map("0:v:0");
+        if !vf.is_empty() {
+            cmd.args(["-vf", vf.as_str()]);
+        }
+        if p.fps > 0 {
+            cmd.args(["-fpsmax", &p.fps.to_string()]);
+        }
         cmd.args(&job.extra.output_args);
     };
     let x264 = |cmd: &mut FfmpegCommand| {
@@ -698,8 +711,12 @@ fn encode(
             video["audio_kbps"] = audio_kbps.into();
         }
         video["encoder"] = codec.into();
-        video["filter"] = vf.as_str().into();
-        video["fpsmax"] = p.fps.into();
+        if !vf.is_empty() {
+            video["filter"] = vf.as_str().into();
+        }
+        if p.fps > 0 {
+            video["fpsmax"] = p.fps.into();
+        }
         meta.apply(cmd, video);
         cmd.overwrite().output(out);
     };
@@ -859,6 +876,20 @@ mod tests {
         assert_eq!(exact_span(&all, 9.0, 10.0, 10.0).1, 10.0);
         // no frame info: the times as given
         assert_eq!(exact_span(&[], 1.0, 2.0, 10.0), (1.0, 2.0));
+    }
+
+    #[test]
+    fn video_filters() {
+        assert_eq!(video_filter(0, &[], None), "");
+        assert_eq!(
+            video_filter(720, &[], Some(",format=nv12,hwupload")),
+            "scale=-2:'min(720,ih)':flags=lanczos,format=nv12,hwupload"
+        );
+        // no height limit: no scaling, the rest stays in order
+        assert_eq!(
+            video_filter(0, &["hflip".into()], Some(",format=nv12,hwupload")),
+            "hflip,format=nv12,hwupload"
+        );
     }
 
     #[test]

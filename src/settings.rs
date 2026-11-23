@@ -10,10 +10,13 @@ use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_MAX_MB: f64 = 20.0; // Discord's upload limit
 
+/// How a preset makes its video. Not stored per se: it follows from the limits (no limit
+/// at all = copy). Written to the settings file as `type` for older versions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PresetKind {
-    /// Re-encode: fit under `max_mb` (or a fixed quality when there is no limit).
+    /// Re-encode: scale / cap the frame rate / fit under `max_mb` (fixed quality without a
+    /// size limit).
     Compress,
     /// Just trim: copy the video stream untouched.
     Original,
@@ -32,33 +35,101 @@ fn d_max_mb() -> Option<f64> {
     Some(DEFAULT_MAX_MB)
 }
 
+/// A preset as stored in settings.json (the `type` field is from before the kind followed
+/// from the limits: an "original" preset there has no limits, whatever else it says).
+#[derive(Serialize, Deserialize)]
+struct PresetFile {
+    id: String,
+    #[serde(rename = "type", default = "kind_compress")]
+    kind: PresetKind,
+    #[serde(default)]
+    name: String,
+    #[serde(default = "d_height")]
+    height: u32,
+    #[serde(default = "d_fps")]
+    fps: u32,
+    #[serde(default = "d_max_mb")]
+    max_mb: Option<f64>,
+    #[serde(default)]
+    suffix: String,
+}
+
+impl From<PresetFile> for Preset {
+    fn from(f: PresetFile) -> Self {
+        let original = f.kind == PresetKind::Original;
+        Self {
+            id: f.id,
+            name: f.name,
+            height: if original { 0 } else { f.height },
+            fps: if original { 0 } else { f.fps },
+            max_mb: if original { None } else { f.max_mb },
+            suffix: f.suffix,
+        }
+    }
+}
+
+impl From<Preset> for PresetFile {
+    fn from(p: Preset) -> Self {
+        Self {
+            kind: p.kind(),
+            id: p.id,
+            name: p.name,
+            height: p.height,
+            fps: p.fps,
+            max_mb: p.max_mb,
+            suffix: p.suffix,
+        }
+    }
+}
+
+/// An export preset. Each limit is optional; with none at all the video is copied as-is.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(from = "PresetFile", into = "PresetFile")]
 pub struct Preset {
     /// Stable id; Thunar entries refer to it, so it never changes after creation.
     pub id: String,
-    #[serde(rename = "type", default = "kind_compress")]
-    pub kind: PresetKind,
     /// Blank = shown as e.g. "720p60".
-    #[serde(default)]
     pub name: String,
-    #[serde(default = "d_height")]
+    /// Max height in pixels; 0 = the clip's own (never upscaled either way).
     pub height: u32,
-    #[serde(default = "d_fps")]
+    /// Max frame rate; 0 = the clip's own.
     pub fps: u32,
     /// None = no size limit (fixed quality).
-    #[serde(default = "d_max_mb")]
     pub max_mb: Option<f64>,
-    #[serde(default)]
     pub suffix: String,
 }
 
 impl Preset {
-    pub fn is_original(&self) -> bool {
-        self.kind == PresetKind::Original
+    pub fn kind(&self) -> PresetKind {
+        if self.height == 0 && self.fps == 0 && self.limit_mb().is_none() {
+            PresetKind::Original
+        } else {
+            PresetKind::Compress
+        }
     }
 
+    /// No limits: trims by copying the video stream.
+    pub fn is_original(&self) -> bool {
+        self.kind() == PresetKind::Original
+    }
+
+    /// The height / fps limits, e.g. "720p60", "720p", "60fps"; "" when neither is set.
     pub fn resolution(&self) -> String {
-        format!("{}p{}", self.height, self.fps)
+        match (self.height, self.fps) {
+            (0, 0) => String::new(),
+            (h, 0) => format!("{h}p"),
+            (0, f) => format!("{f}fps"),
+            (h, f) => format!("{h}p{f}"),
+        }
+    }
+
+    /// The file suffix a new preset gets, e.g. "_720p60" (or "_20mb" for a size limit only).
+    pub fn auto_suffix(&self) -> String {
+        match (self.resolution(), self.limit_mb()) {
+            (r, _) if !r.is_empty() => format!("_{r}"),
+            (_, Some(mb)) => format!("_{}mb", fmt_num(mb)),
+            _ => String::new(),
+        }
     }
 
     /// Short name: the preset's name, or e.g. "720p60" when it's blank.
@@ -69,14 +140,21 @@ impl Preset {
         } else if self.is_original() {
             "Source".into()
         } else {
-            self.resolution()
+            self.res_text()
         }
     }
 
+    /// The resolution part of a label: "720p60", or "Source res" when only the size is
+    /// limited.
+    fn res_text(&self) -> String {
+        let r = self.resolution();
+        if r.is_empty() { "Source res".into() } else { r }
+    }
+
     pub fn size_text(&self) -> String {
-        match self.max_mb {
-            Some(mb) if mb > 0.0 => format!("{} MB", fmt_num(mb)),
-            _ => "no size limit".into(),
+        match self.limit_mb() {
+            Some(mb) => format!("{} MB", fmt_num(mb)),
+            None => "no size limit".into(),
         }
     }
 
@@ -85,7 +163,7 @@ impl Preset {
         if self.is_original() {
             return self.label();
         }
-        let (label, res) = (self.label(), self.resolution());
+        let (label, res) = (self.label(), self.res_text());
         if label == res {
             format!("{res} · {}", self.size_text())
         } else {
@@ -256,27 +334,18 @@ impl Default for Settings {
 }
 
 pub fn default_presets() -> Vec<Preset> {
-    let compress = |id: &str, height, fps, suffix: &str| Preset {
+    let preset = |id: &str, height, fps, max_mb| Preset {
         id: id.into(),
-        kind: PresetKind::Compress,
         name: String::new(),
         height,
         fps,
-        max_mb: Some(DEFAULT_MAX_MB),
-        suffix: suffix.into(),
+        max_mb,
+        suffix: String::new(),
     };
     vec![
-        compress("primary", 720, 60, ""),
-        compress("secondary", 1080, 30, ""),
-        Preset {
-            id: "original".into(),
-            kind: PresetKind::Original,
-            name: String::new(),
-            height: 0,
-            fps: 0,
-            max_mb: None,
-            suffix: String::new(),
-        },
+        preset("primary", 720, 60, Some(DEFAULT_MAX_MB)),
+        preset("secondary", 1080, 30, Some(DEFAULT_MAX_MB)),
+        preset("original", 0, 0, None),
     ]
 }
 
@@ -438,6 +507,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn kind_follows_the_limits() {
+        let mut p = default_presets().remove(0);
+        assert_eq!(p.kind(), PresetKind::Compress);
+        p.height = 0;
+        assert_eq!((p.resolution().as_str(), p.menu_text().as_str()), ("60fps", "60fps · 20 MB"));
+        p.fps = 0;
+        // only a size limit: still re-encoded, at the source resolution
+        assert_eq!(p.menu_text(), "Source res · 20 MB");
+        assert_eq!(p.auto_suffix(), "_20mb");
+        p.max_mb = Some(0.0); // 0 = no limit
+        assert!(p.is_original());
+        assert_eq!(p.menu_text(), "Source");
+        p.fps = 30;
+        assert_eq!((p.menu_text().as_str(), p.auto_suffix().as_str()), ("30fps · no size limit", "_30fps"));
+        // the file keeps "type" for older versions, and reading it back gives the same
+        let json = serde_json::to_value(&p).unwrap();
+        assert_eq!(json["type"], "compress");
+        let orig = &default_presets()[2];
+        assert_eq!(serde_json::to_value(orig).unwrap()["type"], "original");
+        let back: Preset = serde_json::from_value(json).unwrap();
+        assert_eq!(back, p);
+    }
+
+    #[test]
     fn labels() {
         let p = &default_presets();
         assert_eq!(p[0].menu_text(), "720p60 · 20 MB");
@@ -460,6 +553,8 @@ mod tests {
         assert_eq!(s.presets[0].max_mb, Some(8.5));
         assert_eq!(s.presets[1].max_mb, None);
         assert!(s.presets[2].is_original());
+        // an old "original" entry gets no limits even though height / fps have defaults
+        assert_eq!((s.presets[2].height, s.presets[2].fps), (0, 0));
         assert_eq!(s.tracks["Voice"].denoise, Denoise::On);
         assert_eq!(s.clips_folder, None);
         assert_eq!(s.export_folder, None);

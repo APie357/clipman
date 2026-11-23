@@ -7,7 +7,7 @@ use eframe::egui::{self, RichText};
 
 use crate::plugin::ClipAction;
 
-use crate::settings::{Denoise, Encoder, Preset, PresetKind, Settings, TrackCfg, fmt_num};
+use crate::settings::{Denoise, Encoder, Preset, Settings, TrackCfg, fmt_num};
 
 pub enum Outcome {
     /// Saved with the Save button (or Regenerate) — use these settings.
@@ -19,9 +19,64 @@ pub enum Outcome {
 
 /// Per-preset editing state that isn't part of the saved settings.
 struct Row {
+    height: String,
+    fps: String,
     max_mb: String,
-    /// New presets' suffix follows their resolution until it's edited.
+    /// New presets' suffix follows their limits until it's edited.
     auto_suffix: bool,
+}
+
+impl Row {
+    fn new(p: &Preset, auto_suffix: bool) -> Self {
+        let num = |n: u32| if n == 0 { String::new() } else { n.to_string() };
+        Self {
+            height: num(p.height),
+            fps: num(p.fps),
+            max_mb: p.limit_mb().map(fmt_num).unwrap_or_default(),
+            auto_suffix,
+        }
+    }
+
+    /// The limits typed in, or None while one of them can't be read.
+    fn limits(&self) -> Option<(u32, u32, Option<f64>)> {
+        Some((parse_height(&self.height)?, parse_fps(&self.fps)?, parse_mb(&self.max_mb)?))
+    }
+}
+
+/// "720", "720p" or blank (0 = keep the clip's). None = not a height.
+fn parse_height(s: &str) -> Option<u32> {
+    let t = s.trim().trim_end_matches(['p', 'P']).trim();
+    if t.is_empty() {
+        return Some(0);
+    }
+    t.parse().ok().filter(|h| (144..=4320).contains(h))
+}
+
+/// "60", "60fps" or blank (0 = keep the clip's). None = not a frame rate.
+fn parse_fps(s: &str) -> Option<u32> {
+    let t = s.trim();
+    let t = t
+        .strip_suffix("fps")
+        .or_else(|| t.strip_suffix("FPS"))
+        .unwrap_or(t)
+        .trim();
+    if t.is_empty() {
+        return Some(0);
+    }
+    t.parse().ok().filter(|f| (1..=240).contains(f))
+}
+
+/// "20", "8,5" or blank (no limit). None = not a size.
+fn parse_mb(s: &str) -> Option<Option<f64>> {
+    let t = s.trim().replace(',', ".");
+    let t = t.trim_end_matches(['m', 'M', 'b', 'B']).trim();
+    if t.is_empty() {
+        return Some(None);
+    }
+    t.parse::<f64>()
+        .ok()
+        .filter(|v| v.is_finite() && *v > 0.0)
+        .map(Some)
 }
 
 pub struct SettingsUi {
@@ -97,10 +152,7 @@ impl SettingsUi {
         let rows = draft
             .presets
             .iter()
-            .map(|p| Row {
-                max_mb: p.max_mb.map(fmt_num).unwrap_or_default(),
-                auto_suffix: false,
-            })
+            .map(|p| Row::new(p, false))
             .collect();
         Self {
             settings_check_updates: settings.check_updates,
@@ -128,48 +180,51 @@ impl SettingsUi {
         self.plugin_actions = plugin_actions;
     }
 
+    /// A preset field that can't be read (blocks saving).
+    fn invalid_preset(&self) -> Option<String> {
+        let (p, _) = self
+            .draft
+            .presets
+            .iter()
+            .zip(&self.rows)
+            .find(|(_, r)| r.limits().is_none())?;
+        Some(format!(
+            "Preset \u{201c}{}\u{201d}: max height is 144\u{2013}4320, max fps 1\u{2013}240, max \
+             size a number of MB. Leave a field blank for no limit.",
+            p.label()
+        ))
+    }
+
     fn result(&self) -> Settings {
         let mut s = self.draft.clone();
         for (p, row) in s.presets.iter_mut().zip(&self.rows) {
-            p.max_mb = row
-                .max_mb
-                .trim()
-                .replace(',', ".")
-                .parse::<f64>()
-                .ok()
-                .filter(|v| *v > 0.0);
+            if let Some((h, f, mb)) = row.limits() {
+                (p.height, p.fps, p.max_mb) = (h, f, mb);
+            }
         }
         s.output_prefix = s.output_prefix.trim().replace(['/', '\\'], "_");
         s
     }
 
-    fn add_preset(&mut self, kind: PresetKind) {
-        let id = self.result().new_preset_id();
-        let original = kind == PresetKind::Original;
-        self.draft.presets.push(Preset {
-            id,
-            kind,
+    fn add_preset(&mut self) {
+        let mut p = Preset {
+            id: self.result().new_preset_id(),
             name: String::new(),
-            height: if original { 0 } else { 1080 },
-            fps: if original { 0 } else { 60 },
-            max_mb: if original {
-                None
-            } else {
-                Some(crate::settings::DEFAULT_MAX_MB)
-            },
+            height: 1080,
+            fps: 60,
+            max_mb: Some(crate::settings::DEFAULT_MAX_MB),
             suffix: String::new(),
-        });
-        self.rows.push(Row {
-            max_mb: if original {
-                String::new()
-            } else {
-                fmt_num(crate::settings::DEFAULT_MAX_MB)
-            },
-            auto_suffix: !original,
-        });
+        };
+        p.suffix = p.auto_suffix();
+        self.rows.push(Row::new(&p, true));
+        self.draft.presets.push(p);
     }
 
     fn regenerate_menu(&mut self) {
+        if let Some(e) = self.invalid_preset() {
+            self.message = Some(e);
+            return;
+        }
         let s = self.result();
         let res = s
             .save()
@@ -257,9 +312,9 @@ impl SettingsUi {
             ui.horizontal(|ui| {
                 if ui.button("Save").clicked() {
                     let s = self.result();
-                    match s.save() {
+                    match self.invalid_preset().map_or_else(|| s.save().map_err(|e| format!("Couldn't save settings: {e}")), Err) {
                         Ok(()) => outcome = Some(Outcome::Saved(Box::new(s))),
-                        Err(e) => self.message = Some(format!("Couldn't save settings: {e}")),
+                        Err(e) => self.message = Some(e),
                     }
                 }
                 if ui.button("Cancel").clicked()
@@ -432,26 +487,7 @@ impl SettingsUi {
             ));
         });
         let mut remove = None;
-        // the Max height / Max fps fields all as wide as the widest value in their column
-        let (height_w, fps_w) = {
-            let font = egui::TextStyle::Button.resolve(ui.style());
-            let pad = 2.0 * ui.spacing().button_padding.x;
-            let width = |text: String| {
-                ui.painter()
-                    .layout_no_wrap(text, font.clone(), egui::Color32::WHITE)
-                    .size()
-                    .x
-                    + pad
-            };
-            let compress = self.draft.presets.iter().filter(|p| !p.is_original());
-            let widest = |f: &dyn Fn(&Preset) -> String| {
-                compress.clone().map(|p| width(f(p))).fold(0.0, f32::max)
-            };
-            (
-                widest(&|p| format!("{}p", p.height)),
-                widest(&|p| p.fps.to_string()),
-            )
-        };
+        let error = ui.visuals().error_fg_color;
         egui::Grid::new("presets")
             .striped(true)
             .spacing([10.0, 6.0])
@@ -462,6 +498,7 @@ impl SettingsUi {
                     "Max fps",
                     "Max size (MB)",
                     "File suffix",
+                    "Video",
                     "",
                 ] {
                     ui.strong(h);
@@ -474,6 +511,10 @@ impl SettingsUi {
                     .zip(&mut self.rows)
                     .enumerate()
                 {
+                    // the limits as typed so far (the name hint and the Video column follow)
+                    if let Some((h, f, mb)) = row.limits() {
+                        (p.height, p.fps, p.max_mb) = (h, f, mb);
+                    }
                     let hint = p.label();
                     ui.add_sized(
                         [230.0, super::CONTROL_HEIGHT],
@@ -481,30 +522,27 @@ impl SettingsUi {
                             .vertical_align(egui::Align::Center)
                             .hint_text(hint),
                     );
-                    if p.is_original() {
-                        for _ in 0..3 {
-                            ui.weak("—");
+                    // a limit field: blank = none; red while it can't be read
+                    let field = |ui: &mut egui::Ui, text: &mut String, width: f32, hint: &str, ok: bool| {
+                        let mut edit = egui::TextEdit::singleline(text)
+                            .vertical_align(egui::Align::Center)
+                            .hint_text(hint);
+                        if !ok {
+                            edit = edit.text_color(error);
                         }
-                    } else {
-                        ui.add_sized(
-                            [height_w, super::CONTROL_HEIGHT],
-                            egui::DragValue::new(&mut p.height)
-                                .range(144..=4320)
-                                .suffix("p"),
-                        );
-                        ui.add_sized(
-                            [fps_w, super::CONTROL_HEIGHT],
-                            egui::DragValue::new(&mut p.fps).range(1..=240),
-                        );
-                        ui.add_sized(
-                            [90.0, super::CONTROL_HEIGHT],
-                            egui::TextEdit::singleline(&mut row.max_mb)
-                                .vertical_align(egui::Align::Center)
-                                .hint_text("no limit"),
-                        );
-                        if row.auto_suffix {
-                            p.suffix = format!("_{}", p.resolution());
-                        }
+                        ui.add_sized([width, super::CONTROL_HEIGHT], edit)
+                    };
+                    let ok_h = parse_height(&row.height).is_some();
+                    field(ui, &mut row.height, 80.0, "source", ok_h)
+                        .on_hover_text("Scaled down to at most this height (never up). Blank: the clip\u{2019}s.");
+                    let ok_f = parse_fps(&row.fps).is_some();
+                    field(ui, &mut row.fps, 70.0, "source", ok_f)
+                        .on_hover_text("Frame rate capped at this. Blank: the clip\u{2019}s.");
+                    let ok_mb = parse_mb(&row.max_mb).is_some();
+                    field(ui, &mut row.max_mb, 90.0, "no limit", ok_mb)
+                        .on_hover_text("Fits the file under this size. Blank: fixed high quality, any size.");
+                    if row.auto_suffix {
+                        p.suffix = p.auto_suffix();
                     }
                     if ui
                         .add_sized(
@@ -516,6 +554,14 @@ impl SettingsUi {
                         .changed()
                     {
                         row.auto_suffix = false;
+                    }
+                    if p.is_original() {
+                        ui.weak("copied").on_hover_text(
+                            "No limits: trims without re-encoding (instant and lossless, but the \
+                             start snaps to a keyframe)",
+                        );
+                    } else {
+                        ui.weak("re-encoded");
                     }
                     if ui.button("✖").on_hover_text("Remove this preset").clicked() {
                         remove = Some(i);
@@ -533,18 +579,16 @@ impl SettingsUi {
                 "No presets: add one to be able to save clips.",
             );
         }
+        ui.add_space(6.0); // apart from the table
         ui.horizontal(|ui| {
-            if ui.button("Add compress preset").clicked() {
-                self.add_preset(PresetKind::Compress);
-            }
-            if ui.button("Add source preset").on_hover_text("Just trims: copies the video as-is, no re-encoding").clicked() {
-                self.add_preset(PresetKind::Original);
+            if ui.button("Add preset").clicked() {
+                self.add_preset();
             }
             if crate::menu::SUPPORTED
                 && ui
                     .button("Regenerate right-click menu")
                     .on_hover_text(format!(
-                        "Saves these settings, then rewrites {}\u{2019}s \u{201c}Clipman\u{201d} submenu: one entry per compress preset",
+                        "Saves these settings, then rewrites {}\u{2019}s \u{201c}Clipman\u{201d} submenu: one entry per re-encoding preset",
                         if cfg!(windows) { "Explorer" } else { "Thunar" }
                     ))
                     .clicked()
@@ -552,7 +596,11 @@ impl SettingsUi {
                 self.regenerate_menu();
             }
         });
-        ui.weak("Leave a name blank to show it as resolution + fps. Leave Max size blank for no size limit (fixed high quality instead).");
+        ui.weak(
+            "Leave Max height or Max fps blank to keep the clip\u{2019}s, and Max size blank for no \
+             size limit (fixed high quality). A preset with all three blank copies the video \
+             without re-encoding. Leave a name blank to show the limits instead.",
+        );
         ui.add_space(8.0);
 
         // tracks
@@ -602,5 +650,53 @@ impl SettingsUi {
                 self.manage_plugins = true;
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The dialog drawn headless (a debug build, so egui's layout checks run), with an
+    /// unreadable field: it's kept as typed, the preset keeps its last good limits, and
+    /// Save is refused.
+    #[test]
+    fn draws_and_validates_presets() {
+        let mut ui = SettingsUi::new(&Settings::default(), &[], 0, vec![]);
+        ui.add_preset();
+        let last = ui.rows.len() - 1;
+        assert_eq!(ui.draft.presets[last].suffix, "_1080p60");
+        ui.rows[last].fps = "fast".into();
+        let ctx = egui::Context::default();
+        for _ in 0..2 {
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                ui.show(ctx, false);
+            });
+        }
+        assert_eq!(ui.draft.presets[last].fps, 60);
+        assert!(ui.invalid_preset().is_some());
+        // blanking every limit makes it a copying preset
+        ui.rows[last] = Row { height: String::new(), fps: String::new(), max_mb: String::new(), auto_suffix: true };
+        assert!(ui.invalid_preset().is_none());
+        assert!(ui.result().presets[last].is_original());
+    }
+
+    #[test]
+    fn parses_limits() {
+        assert_eq!(parse_height(""), Some(0));
+        assert_eq!(parse_height(" 720p "), Some(720));
+        assert_eq!(parse_height("1080"), Some(1080));
+        assert_eq!(parse_height("100"), None); // too small
+        assert_eq!(parse_height("abc"), None);
+        assert_eq!(parse_fps(""), Some(0));
+        assert_eq!(parse_fps("60fps"), Some(60));
+        assert_eq!(parse_fps("0"), None);
+        assert_eq!(parse_mb(""), Some(None));
+        assert_eq!(parse_mb("8,5"), Some(Some(8.5)));
+        assert_eq!(parse_mb("20 MB"), Some(Some(20.0)));
+        assert_eq!(parse_mb("-1"), None);
+        // all blank: the row describes a copying preset
+        let row = Row::new(&crate::settings::default_presets()[2], false);
+        assert_eq!(row.limits(), Some((0, 0, None)));
     }
 }

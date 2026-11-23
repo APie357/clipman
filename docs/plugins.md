@@ -247,8 +247,8 @@ closed their windows.
 | Field | |
 |---|---|
 | `src`, `dst` | source and output paths |
-| `kind` | `"compress"` (re-encodes) or `"original"` (a source preset: stream copy) |
-| `preset` | `{ id, type, name, height, fps, max_mb, suffix }` |
+| `kind` | `"compress"` (re-encodes) or `"original"` (a preset without limits: stream copy) |
+| `preset` | `{ id, type, name, height, fps, max_mb, suffix }` (`height` / `fps` 0 = the clip's) |
 | `start`, `end` | the range in seconds (`nil` = the clip's start / end) |
 | `tracks`, `denoise` | 1-based audio track numbers, as in `--audio` |
 
@@ -266,7 +266,7 @@ It returns `nil` (nothing to add) or a table:
 Notes:
 
 - Filters from several plugins are chained in plugin order (alphabetical by id).
-- A source preset copies the video without re-encoding, so filters can't apply. A plugin
+- A preset without limits (*Source*) copies the video without re-encoding, so filters can't apply. A plugin
   that returns `vf` or `af` for an `"original"` job makes the export fail with a message, so
   check `job.kind`.
 - Arguments go to ffmpeg as separate arguments, never through a shell. To put text into a

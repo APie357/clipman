@@ -1714,7 +1714,7 @@ mod tests {
         assert_eq!(x.meta["wm"]["tracks"], serde_json::json!([1, 2]));
         assert_eq!(x.tags, [("title".to_string(), "My clip".to_string())]);
         let mut orig = job();
-        orig.preset.kind = crate::settings::PresetKind::Original;
+        (orig.preset.height, orig.preset.fps, orig.preset.max_mb) = (0, 0, None);
         assert_eq!(h.export_start(&orig).unwrap(), Extra::default());
         std::fs::remove_dir_all(dir).unwrap();
 

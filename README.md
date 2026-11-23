@@ -74,12 +74,12 @@ also returns to the browser after exporting.
 - **Audio** dropdown: tick the tracks to keep; they're mixed into one at their original
   volume. Speech tracks have a *Noise suppression* toggle (RNNoise). The preview plays the
   actual mix, with noise suppression once its model is downloaded.
-- **Preset** dropdown: every preset from Settings. Compress presets fit the clip under
-  their max size (two-pass x264), or use a fixed high quality when they have no max size.
+- **Preset** dropdown: every preset from Settings. Presets with a limit re-encode: they
+  scale down to the max height, cap the frame rate, and fit the clip under their max size (two-pass x264), or use a fixed high quality when they have no max size.
   The *Video encoder* setting picks CPU or GPU: *Auto* (the default) uses the GPU (VAAPI,
   NVENC, AMF or Quick Sync, whichever works) only for presets without a max size, where
   it's several times faster for somewhat larger files. Fitting a size limit stays on x264,
-  which looks clearly better at the same size. A failed GPU encode falls back to x264. *Source* presets copy the video without re-encoding; its start snaps to the
+  which looks clearly better at the same size. A failed GPU encode falls back to x264. A preset with no limits at all (*Source*) copies the video without re-encoding; its start snaps to the
   keyframe at or before the start handle (GSR writes one every ~2 s), and the summary shows
   where it will actually start.
 - **Export** renders into the export folder with a progress bar in the window (Cancel stops
@@ -128,10 +128,12 @@ Stored as JSON in `~/.config/clipman/settings.json` (Windows: `%APPDATA%\clipman
   installed. The Arch package is built without it, since pacman does its updates.
 - **File name prefix**.
 - **Quality presets**: name (blank shows as e.g. `720p60`), max height, max fps, max size in
-  MB (blank = no limit), file suffix. Add compress or source presets; any preset can
-  be removed. Clips are never upscaled.
+  MB, file suffix. A blank max height or fps keeps the clip's, a blank max size means no
+  size limit, and with all three blank the preset copies the video instead of re-encoding
+  (the *Video* column says which). *Add preset* adds one (1080p60, 20 MB to start); any
+  preset can be removed. Clips are never upscaled.
 - **Regenerate right-click menu**: rewrites the *Clipman* submenu from the presets (one entry
-  per compress preset, plus *Open in Clipman…*). On Linux it's Thunar's: other custom actions
+  per re-encoding preset, plus *Open in Clipman…*). On Linux it's Thunar's: other custom actions
   are kept and `uca.xml` is backed up. Thunar rereads it after a restart, and the dialog offers
   to restart it. On Windows it's Explorer's (see *Windows* below).
 - **Audio tracks**: matched by the name stored in the clip (set in GPU Screen Recorder).

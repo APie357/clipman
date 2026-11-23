@@ -17,8 +17,10 @@ Notes for coding agents working on clipman. Read README.md first for what it doe
 - `src/main.rs`: CLI (clap) and routing. `clipman` opens the browser, `clipman FILE` the
   editor, and `FILE --render-option` renders (terminal progress when stderr is a TTY or with
   `--no-window`, otherwise the GUI progress window). Paths are made absolute here; see below.
-- `src/settings.rs`: the JSON settings. `Preset` (`type` compress|original, blank
-  name shows as `<h>p<fps>`, `max_mb` None = no limit), `TrackCfg` keyed by the stream's
+- `src/settings.rs`: the JSON settings. `Preset` (`height` / `fps` 0 = keep the
+  clip's, `max_mb` None = no limit; `kind()` follows from them: no limit at all = original,
+  a stream copy. `type` is still written to the file (`PresetFile`) and an old "original"
+  entry loads with no limits; blank name shows as e.g. `720p60`), `TrackCfg` keyed by the stream's
   name tag, `output_path()` (single naming scheme into `export_folder()`, default
   `<Videos>/Exports`, never overwrites (`_2`, `_3`), no stacked prefix). The browser isn't
   recursive, which is what keeps exports out of it.
