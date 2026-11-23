@@ -1,15 +1,20 @@
 // SPDX-License-Identifier: Apache-2.0
 //! The Settings dialog: clips folder, noise suppression strength, video encoder, output prefix,
-//! quality presets, audio track names, and regenerating the right-click menu.
+//! quality presets, audio track names, and regenerating the right-click menu. Plugins have
+//! their own dialog (`plugins.rs`), opened from here.
 
 use eframe::egui::{self, RichText};
+
+use crate::plugin::ClipAction;
 
 use crate::settings::{Denoise, Encoder, Preset, PresetKind, Settings, TrackCfg, fmt_num};
 
 pub enum Outcome {
     /// Saved with the Save button (or Regenerate) — use these settings.
-    Saved(Settings),
+    Saved(Box<Settings>),
     Cancelled,
+    /// "Manage plugins…": open the Plugins dialog over this one (this one stays open).
+    ManagePlugins,
 }
 
 /// Per-preset editing state that isn't part of the saved settings.
@@ -30,9 +35,15 @@ pub struct SettingsUi {
     offer_thunar_restart: bool,
     /// A folder picker that's open (on its own thread) and which setting it's for.
     picker: Option<(Folder, super::PendingDialog)>,
+    /// The Manage plugins button was clicked this frame.
+    manage_plugins: bool,
+    /// How many plugins are installed (for the Plugins line).
+    plugin_count: usize,
+    /// Plugin actions to put in the file manager's menu.
+    plugin_actions: Vec<ClipAction>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum Folder {
     Clips,
     Exports,
@@ -61,7 +72,12 @@ const DENOISE_CHOICES: [(Denoise, &str); 3] = [
 
 impl SettingsUi {
     /// `clip_tracks`: track names of the clip that's open, added to the table if new.
-    pub fn new(settings: &Settings, clip_tracks: &[Option<String>]) -> Self {
+    pub fn new(
+        settings: &Settings,
+        clip_tracks: &[Option<String>],
+        plugin_count: usize,
+        plugin_actions: Vec<ClipAction>,
+    ) -> Self {
         let mut draft = settings.clone();
         for name in clip_tracks.iter().flatten() {
             if !draft.tracks.contains_key(name) {
@@ -94,7 +110,22 @@ impl SettingsUi {
             message: None,
             offer_thunar_restart: false,
             picker: None,
+            manage_plugins: false,
+            plugin_count,
+            plugin_actions,
         }
+    }
+
+    /// The Plugins dialog saved: keep its changes, so Save here doesn't undo them.
+    pub fn set_plugins(
+        &mut self,
+        plugins: &indexmap::IndexMap<String, crate::settings::PluginCfg>,
+        plugin_count: usize,
+        plugin_actions: Vec<ClipAction>,
+    ) {
+        self.draft.plugins = plugins.clone();
+        self.plugin_count = plugin_count;
+        self.plugin_actions = plugin_actions;
     }
 
     fn result(&self) -> Settings {
@@ -143,7 +174,9 @@ impl SettingsUi {
         let res = s
             .save()
             .map_err(anyhow::Error::from)
-            .and_then(|_| crate::menu::write(&s, &std::env::current_exe()?));
+            .and_then(|_| {
+                crate::menu::write(&s, &std::env::current_exe()?, &self.plugin_actions)
+            });
         match res {
             Ok(place) => {
                 self.applied = true;
@@ -179,7 +212,8 @@ impl SettingsUi {
         }
     }
 
-    pub fn show(&mut self, ctx: &egui::Context) -> Option<Outcome> {
+    /// `covered`: another dialog is open on top (the Plugins dialog), so keys aren't ours.
+    pub fn show(&mut self, ctx: &egui::Context, covered: bool) -> Option<Outcome> {
         if let Some(result) = self.picker.as_ref().and_then(|(_, d)| d.poll()) {
             let which = self.picker.take().map(|(w, _)| w);
             match (which, result) {
@@ -224,20 +258,25 @@ impl SettingsUi {
                 if ui.button("Save").clicked() {
                     let s = self.result();
                     match s.save() {
-                        Ok(()) => outcome = Some(Outcome::Saved(s)),
+                        Ok(()) => outcome = Some(Outcome::Saved(Box::new(s))),
                         Err(e) => self.message = Some(format!("Couldn't save settings: {e}")),
                     }
                 }
-                if ui.button("Cancel").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                if ui.button("Cancel").clicked()
+                    || (!covered && ui.input(|i| i.key_pressed(egui::Key::Escape)))
+                {
                     // Regenerate already saved: keep what was written
                     outcome = Some(if self.applied {
-                        Outcome::Saved(Settings::load())
+                        Outcome::Saved(Box::new(Settings::load()))
                     } else {
                         Outcome::Cancelled
                     });
                 }
             });
         });
+        if std::mem::take(&mut self.manage_plugins) && outcome.is_none() {
+            outcome = Some(Outcome::ManagePlugins);
+        }
         outcome
     }
 
@@ -521,5 +560,23 @@ impl SettingsUi {
         if let Some(n) = forget {
             self.draft.tracks.shift_remove(&n);
         }
+        ui.add_space(8.0);
+
+        // plugins: their own dialog
+        ui.label(RichText::new("Plugins").strong());
+        ui.horizontal(|ui| {
+            ui.label(match self.plugin_count {
+                0 => "No plugins installed".to_string(),
+                1 => "1 plugin installed".to_string(),
+                n => format!("{n} plugins installed"),
+            });
+            if ui
+                .button("Manage plugins\u{2026}")
+                .on_hover_text("Turn plugins on or off, and change their settings")
+                .clicked()
+            {
+                self.manage_plugins = true;
+            }
+        });
     }
 }

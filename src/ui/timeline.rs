@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 //! The trim timeline: a track with the selected range, a playhead, and two handles
-//! hanging below the track that you drag to set the start and end.
+//! hanging below the track that you drag to set the start and end. Plugins can add
+//! markers above the track; clicking near one seeks to it.
 
 use eframe::egui::{self, Color32, CornerRadius, Pos2, Rect, Sense, Stroke, Vec2};
+
+use crate::plugin::Marker;
 
 pub const MIN_LEN: f64 = 0.5; // seconds
 
@@ -11,6 +14,8 @@ const TRACK_TOP: f32 = 12.0;
 const TRACK_H: f32 = 26.0;
 const HANDLE_W: f32 = 18.0;
 const HANDLE_H: f32 = 26.0;
+/// How close (px) the pointer has to be to a marker to snap to it / show its label.
+const MARKER_SNAP: f32 = 5.0;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Drag {
@@ -31,6 +36,7 @@ pub struct Timeline {
     pub duration: f64,
     pub start: f64,
     pub end: f64,
+    pub markers: Vec<Marker>,
     drag: Option<Drag>,
 }
 
@@ -40,6 +46,7 @@ impl Timeline {
             duration: duration.max(0.001),
             start: 0.0,
             end: duration,
+            markers: Vec::new(),
             drag: None,
         }
     }
@@ -63,6 +70,16 @@ impl Timeline {
             Pos2::new(x - HANDLE_W / 2.0, rect.top() + TRACK_TOP + TRACK_H),
             Vec2::new(HANDLE_W, HANDLE_H),
         )
+    }
+
+    /// The marker nearest to x, if it's within snapping distance.
+    fn marker_near(&self, rect: Rect, x: f32) -> Option<&Marker> {
+        self.markers
+            .iter()
+            .map(|m| (m, (self.x(rect, m.t) - x).abs()))
+            .filter(|(_, d)| *d <= MARKER_SNAP)
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(m, _)| m)
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui, playhead: f64) -> TimelineEvent {
@@ -102,7 +119,13 @@ impl Timeline {
             match drag {
                 Drag::Start => self.start = t.min(self.end - MIN_LEN).max(0.0),
                 Drag::End => self.end = t.max(self.start + MIN_LEN).min(self.duration),
-                Drag::Seek => ev.seek_to = Some(t),
+                Drag::Seek => {
+                    // clicking (not dragging) on a marker goes exactly to it
+                    let snap = (resp.clicked() || resp.drag_started())
+                        .then(|| self.marker_near(rect, pos.x))
+                        .flatten();
+                    ev.seek_to = Some(snap.map_or(t, |m| m.t));
+                }
             }
             ev.changed = Some(drag);
         }
@@ -163,6 +186,29 @@ impl Timeline {
             }
         }
 
+        // plugin markers: small triangles above the track
+        let hover_x = resp.hover_pos().map(|p| p.x);
+        for m in &self.markers {
+            let x = self.x(rect, m.t);
+            let color = m
+                .color
+                .map_or(visuals.warn_fg_color, |[r, g, b]| Color32::from_rgb(r, g, b));
+            let pts = vec![
+                Pos2::new(x - 5.0, rect.top() + 1.0),
+                Pos2::new(x + 5.0, rect.top() + 1.0),
+                Pos2::new(x, track.top() - 1.0),
+            ];
+            p.add(egui::Shape::convex_polygon(pts, color, Stroke::NONE));
+            p.line_segment(
+                [Pos2::new(x, track.top()), Pos2::new(x, track.bottom())],
+                Stroke::new(1.0, color.gamma_multiply(0.7)),
+            );
+        }
+        let hovered_marker = hover_x
+            .and_then(|x| self.marker_near(rect, x))
+            .filter(|m| !m.label.is_empty())
+            .map(|m| m.label.clone());
+
         let x = self.x(rect, playhead);
         p.rect_filled(
             Rect::from_x_y_ranges(x - 1.0..=x + 1.0, track.top() - 6.0..=track.bottom() + 6.0),
@@ -170,6 +216,11 @@ impl Timeline {
             Color32::WHITE,
         );
         p.circle_filled(Pos2::new(x, track.top() - 6.0), 5.0, Color32::WHITE);
+        if let Some(label) = hovered_marker
+            && self.drag.is_none()
+        {
+            resp.on_hover_text_at_pointer(label);
+        }
         ev
     }
 }

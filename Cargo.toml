@@ -15,6 +15,8 @@ eframe = { version = "0.33.3", default-features = false, features = ["default_fo
 ffmpeg-sidecar = { version = "2.7.0", default-features = false }
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
 indexmap = { version = "2.14.2", features = ["serde"] }
+# Lua plugins (built from vendored source, so nothing extra to install)
+mlua = { version = "0.12.3", features = ["lua54", "vendored", "serialize"], optional = true }
 rfd = "0.17.2"
 rodio = { version = "0.23.0", default-features = false, features = ["playback"] }
 serde = { version = "1.0.229", features = ["derive"] }
@@ -23,13 +25,15 @@ sha2 = "0.11.1"
 ureq = { version = "3.5.2", optional = true }
 
 [features]
-default = ["download", "update-check"]
+default = ["download", "update-check", "plugins"]
 # Download ffmpeg when it's missing (Windows/macOS) and the RNNoise model. Pulls in a
 # TLS stack; `--no-default-features` builds without it.
 download = ["dep:ureq", "ffmpeg-sidecar/download_ffmpeg"]
 # Look for a newer GitHub release once a day (can be turned off in Settings). Distro
 # packages build without it: their package manager does updates.
 update-check = ["download"]
+# Lua plugins from <config>/plugins/<id>/init.lua (see docs/plugins.md).
+plugins = ["dep:mlua"]
 
 [profile.release]
 lto = "thin"

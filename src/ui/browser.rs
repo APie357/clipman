@@ -10,16 +10,27 @@ use std::time::SystemTime;
 
 use eframe::egui::{self, Color32, Vec2};
 
+use crate::plugin::{ClipAction, Host};
 use crate::settings::{Settings, cache_dir};
 
 const EXTENSIONS: [&str; 4] = super::VIDEO_EXTENSIONS;
 const THUMB_W: f32 = 256.0;
 const THUMB_H: f32 = 144.0;
 const THUMB_WORKERS: usize = 2;
+/// Plugin badge callbacks run per clip; spread them over frames.
+const BADGES_PER_FRAME: usize = 8;
 
 pub enum Action {
     None,
     Open(PathBuf),
+    /// A plugin action from a card's right-click menu.
+    Plugin(ClipAction, PathBuf),
+}
+
+enum CardClick {
+    None,
+    Open,
+    Plugin(ClipAction),
 }
 
 struct Clip {
@@ -40,6 +51,10 @@ pub struct Browser {
     thumb_rx: Receiver<(PathBuf, Option<egui::ColorImage>)>,
     thumb_tx: Sender<(PathBuf, Option<egui::ColorImage>)>,
     workers_started: bool,
+    /// Plugin badges per clip, asked for once per refresh.
+    badges: HashMap<PathBuf, Vec<String>>,
+    /// The list was re-read and plugins haven't been told yet.
+    refreshed: bool,
 }
 
 impl Browser {
@@ -56,6 +71,8 @@ impl Browser {
             thumb_rx,
             thumb_tx,
             workers_started: false,
+            badges: HashMap::new(),
+            refreshed: false,
         };
         b.refresh();
         b
@@ -70,6 +87,8 @@ impl Browser {
 
     pub fn refresh(&mut self) {
         self.error = None;
+        self.badges.clear();
+        self.refreshed = true;
         self.clips = match std::fs::read_dir(&self.folder) {
             Ok(rd) => rd
                 .flatten()
@@ -128,8 +147,13 @@ impl Browser {
         }
     }
 
-    pub fn ui(&mut self, ctx: &egui::Context) -> Action {
+    pub fn ui(&mut self, ctx: &egui::Context, plugins: &mut Host) -> Action {
         self.start_workers(ctx);
+        if std::mem::take(&mut self.refreshed) {
+            let paths: Vec<PathBuf> = self.clips.iter().map(|c| c.path.clone()).collect();
+            plugins.browser_refresh(&paths);
+        }
+        let actions = plugins.clip_actions();
         while let Ok((path, img)) = self.thumb_rx.try_recv() {
             match img {
                 Some(img) => {
@@ -191,6 +215,21 @@ impl Browser {
                 .iter()
                 .filter(|c| needle.is_empty() || c.name.to_lowercase().contains(&needle))
                 .collect();
+            if plugins.has_badges() {
+                let missing: Vec<PathBuf> = shown
+                    .iter()
+                    .filter(|c| !self.badges.contains_key(&c.path))
+                    .take(BADGES_PER_FRAME)
+                    .map(|c| c.path.clone())
+                    .collect();
+                if !missing.is_empty() {
+                    ui.ctx().request_repaint();
+                }
+                for p in missing {
+                    let b = plugins.badges(&p);
+                    self.badges.insert(p, b);
+                }
+            }
             if shown.is_empty() {
                 ui.weak(if self.clips.is_empty() {
                     "No clips in this folder."
@@ -205,8 +244,12 @@ impl Browser {
                     ui.horizontal_wrapped(|ui| {
                         ui.spacing_mut().item_spacing = Vec2::new(12.0, 12.0);
                         for c in shown {
-                            if self.card(ui, c) {
-                                action = Action::Open(c.path.clone());
+                            match self.card(ui, c, &actions) {
+                                CardClick::None => {}
+                                CardClick::Open => action = Action::Open(c.path.clone()),
+                                CardClick::Plugin(a) => {
+                                    action = Action::Plugin(a, c.path.clone())
+                                }
                             }
                         }
                     });
@@ -215,12 +258,12 @@ impl Browser {
         action
     }
 
-    /// One clip card. Returns true when clicked.
-    fn card(&self, ui: &mut egui::Ui, c: &Clip) -> bool {
+    /// One clip card: click opens it, right-click shows plugin actions.
+    fn card(&self, ui: &mut egui::Ui, c: &Clip, actions: &[ClipAction]) -> CardClick {
         let (rect, resp) =
             ui.allocate_exact_size(Vec2::new(THUMB_W, THUMB_H + 46.0), egui::Sense::click());
         if !ui.is_rect_visible(rect) {
-            return false;
+            return CardClick::None;
         }
         let p = ui.painter();
         let img = egui::Rect::from_min_size(rect.min, Vec2::new(THUMB_W, THUMB_H));
@@ -277,7 +320,43 @@ impl Browser {
             egui::FontId::proportional(12.0),
             ui.visuals().weak_text_color(),
         );
-        resp.on_hover_text(&c.name).clicked()
+        // plugin badges, top left of the thumbnail
+        let mut x = img.left() + 6.0;
+        for b in self.badges.get(&c.path).into_iter().flatten() {
+            let galley = p.layout_no_wrap(
+                elide(b, 24),
+                egui::FontId::proportional(12.0),
+                Color32::WHITE,
+            );
+            let pill = egui::Rect::from_min_size(
+                egui::pos2(x, img.top() + 6.0),
+                galley.size() + Vec2::new(10.0, 4.0),
+            );
+            if pill.right() > img.right() - 4.0 {
+                break;
+            }
+            p.rect_filled(pill, 4.0, Color32::from_black_alpha(170));
+            p.galley(pill.min + Vec2::new(5.0, 2.0), galley, Color32::WHITE);
+            x = pill.right() + 4.0;
+        }
+        let mut click = CardClick::None;
+        resp.context_menu(|ui| {
+            if ui.button("Open").clicked() {
+                click = CardClick::Open;
+            }
+            if !actions.is_empty() {
+                ui.separator();
+            }
+            for a in actions {
+                if ui.button(a.label.as_str()).clicked() {
+                    click = CardClick::Plugin(a.clone());
+                }
+            }
+        });
+        if resp.on_hover_text(&c.name).clicked() {
+            click = CardClick::Open;
+        }
+        click
     }
 }
 

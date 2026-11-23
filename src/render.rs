@@ -46,7 +46,29 @@ pub struct Job {
     /// Noise suppression strength in percent.
     pub strength: u8,
     pub encoder: Encoder,
+    /// What plugins add (filled in before the job starts; see `plugin::Host::export_start`).
+    pub extra: Extra,
 }
+
+/// Additions from plugins' `on_export_start`. Plain data, so `render()` never runs Lua.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Extra {
+    /// Video filters, applied after clipman's scaling (compress presets only).
+    pub vf: Vec<String>,
+    /// Audio filters, applied after the track mix / noise suppression.
+    pub af: Vec<String>,
+    /// Ids of the plugins that added filters (for the error on a source preset).
+    pub filter_plugins: Vec<String>,
+    /// Output options, added to every ffmpeg pass.
+    pub output_args: Vec<String>,
+    /// Stored in the `clipman` tag as `plugins.<id>`.
+    pub meta: serde_json::Map<String, serde_json::Value>,
+    /// Plain container tags (`-metadata key=value`).
+    pub tags: Vec<(String, String)>,
+}
+
+/// Tags clipman writes itself; plugins can't set them.
+pub const RESERVED_TAGS: [&str; 2] = ["clipman", "comment"];
 
 /// Progress reports: fraction 0..1 of the whole job and a short description.
 pub type Progress<'a> = &'a mut dyn FnMut(f32, &str);
@@ -192,6 +214,19 @@ impl AudioPlan {
         matches!(self, AudioPlan::Graph(g) if g.contains("arnndn"))
     }
 
+    /// The same plan with `af` (an ffmpeg audio filter chain) applied to its output.
+    /// No audio stays no audio.
+    pub fn with_filter(self, af: &str) -> AudioPlan {
+        match self {
+            AudioPlan::None => AudioPlan::None,
+            AudioPlan::Direct(t) => AudioPlan::Graph(format!("[0:a:{t}]{af}[aout]")),
+            AudioPlan::Graph(g) => {
+                let g = g.strip_suffix("[aout]").unwrap_or(&g);
+                AudioPlan::Graph(format!("{g}[apre];[apre]{af}[aout]"))
+            }
+        }
+    }
+
     /// Add the mapping / filter args (not the codec) to an ffmpeg command.
     pub fn apply(&self, cmd: &mut FfmpegCommand) {
         match self {
@@ -317,6 +352,7 @@ fn null_output() -> &'static str {
 struct Meta {
     base: serde_json::Value,
     comment: String,
+    tags: Vec<(String, String)>,
 }
 
 /// Index of the first frame at or after `t` (frame numbers are 0-based).
@@ -426,13 +462,27 @@ impl Meta {
         if (requested_start - start).abs() > 1e-6 {
             base["requested_start"] = json!((requested_start * 1e6).round() / 1e6);
         }
+        if !job.extra.meta.is_empty() {
+            base["plugins"] = serde_json::Value::Object(job.extra.meta.clone());
+        }
         let comment = format!(
             "Clipman: {src_name}, {}\u{2013}{}{frame_text}, {}",
             media::fmt_time(start),
             media::fmt_time(end),
             job.preset.menu_text()
         );
-        Self { base, comment }
+        let tags = job
+            .extra
+            .tags
+            .iter()
+            .filter(|(k, _)| !RESERVED_TAGS.contains(&k.as_str()))
+            .cloned()
+            .collect();
+        Self {
+            base,
+            comment,
+            tags,
+        }
     }
 
     /// Add the metadata (with the encoder details in `video`) and the mp4 flags to the
@@ -444,6 +494,9 @@ impl Meta {
         cmd.args(["-map_metadata:g", "-1"]);
         cmd.arg("-metadata").arg(format!("clipman={m}"));
         cmd.arg("-metadata").arg(format!("comment={}", self.comment));
+        for (k, v) in &self.tags {
+            cmd.arg("-metadata").arg(format!("{k}={v}"));
+        }
         // use_metadata_tags: mp4 drops custom keys like `clipman` without it
         cmd.args(["-movflags", "+faststart+use_metadata_tags"]);
     }
@@ -466,7 +519,18 @@ pub fn render(job: &Job, progress: Progress, cancel: &AtomicBool) -> Result<(Pat
     if end - start <= 0.1 {
         bail!("the selected range is empty");
     }
-    let plan = audio_plan(&job.tracks, &job.denoise, job.strength);
+    let x = &job.extra;
+    if job.preset.is_original() && !(x.vf.is_empty() && x.af.is_empty()) {
+        bail!(
+            "plugin filters ({}) can\u{2019}t be applied to a source preset (it copies the \
+             video without re-encoding)",
+            x.filter_plugins.join(", ")
+        );
+    }
+    let mut plan = audio_plan(&job.tracks, &job.denoise, job.strength);
+    if !x.af.is_empty() {
+        plan = plan.with_filter(&x.af.join(","));
+    }
     if plan.needs_model() {
         progress(0.0, "Getting noise suppression model…");
         ensure_model()?;
@@ -538,6 +602,7 @@ fn render_original(
         }
     }
     cmd.args(["-avoid_negative_ts", "make_zero"]);
+    cmd.args(&job.extra.output_args);
     meta.apply(&mut cmd, serde_json::json!({ "encoder": "copy" }));
     cmd.overwrite().output(out);
     run(
@@ -601,6 +666,10 @@ fn encode(
     let duration = end - start;
     let trimmed = start > 0.0 || end < info.duration;
     let mut vf = format!("scale=-2:'min({},ih)':flags=lanczos", p.height); // never upscale
+    for f in &job.extra.vf {
+        vf += ",";
+        vf += f; // software filters, so before the GPU upload
+    }
     if let Some(hw) = hw {
         vf += hw.filter_suffix();
     }
@@ -615,6 +684,7 @@ fn encode(
         }
         cmd.input(&job.src).map("0:v:0").args(["-vf", vf.as_str()]);
         cmd.args(["-fpsmax", &p.fps.to_string()]);
+        cmd.args(&job.extra.output_args);
     };
     let x264 = |cmd: &mut FfmpegCommand| {
         cmd.codec_video("libx264").preset("slow").pix_fmt("yuv420p");
@@ -789,6 +859,44 @@ mod tests {
         assert_eq!(exact_span(&all, 9.0, 10.0, 10.0).1, 10.0);
         // no frame info: the times as given
         assert_eq!(exact_span(&[], 1.0, 2.0, 10.0), (1.0, 2.0));
+    }
+
+    #[test]
+    fn plugin_audio_filter() {
+        assert_eq!(audio_plan(&[], &[], 100).with_filter("volume=2"), AudioPlan::None);
+        assert_eq!(
+            AudioPlan::Direct(1).with_filter("volume=2"),
+            AudioPlan::Graph("[0:a:1]volume=2[aout]".into())
+        );
+        let AudioPlan::Graph(g) = audio_plan(&[0, 1], &[], 100).with_filter("volume=2") else {
+            panic!()
+        };
+        assert_eq!(
+            g,
+            "[0:a:0][0:a:1]amix=inputs=2:normalize=0:duration=longest[apre];[apre]volume=2[aout]"
+        );
+    }
+
+    #[test]
+    fn plugin_metadata() {
+        let mut job = Job {
+            src: "/clips/a.mp4".into(),
+            dst: "/out/a.mp4".into(),
+            preset: crate::settings::default_presets().remove(0),
+            start: None,
+            end: None,
+            tracks: vec![],
+            denoise: vec![],
+            strength: 100,
+            encoder: Encoder::Cpu,
+            extra: Extra::default(),
+        };
+        job.extra.meta.insert("tags".into(), serde_json::json!({ "game": "x" }));
+        job.extra.tags = vec![("title".into(), "Hi".into()), ("comment".into(), "no".into())];
+        let info = media::ClipInfo::default();
+        let m = Meta::new(&job, &info, &Default::default(), 0.0, 0.0, 1.0, &AudioPlan::None);
+        assert_eq!(m.base["plugins"]["tags"]["game"], "x");
+        assert_eq!(m.tags, [("title".to_string(), "Hi".to_string())]); // comment is ours
     }
 
     #[test]

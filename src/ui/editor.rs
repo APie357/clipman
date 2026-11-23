@@ -13,6 +13,7 @@ use egui::containers::menu::{MenuButton, MenuConfig};
 use super::timeline::{Drag, Timeline};
 use crate::media::{self, ClipInfo, fmt_time};
 use crate::player::Player;
+use crate::plugin::{self, ClipCmd, Host};
 use crate::render::{self, AudioPlan, Job};
 use crate::settings::{Denoise, Settings};
 
@@ -33,6 +34,7 @@ enum RenderMsg {
 }
 
 struct RenderTask {
+    job: Job,
     rx: Receiver<RenderMsg>,
     cancel: Arc<AtomicBool>,
     frac: f32,
@@ -213,8 +215,59 @@ impl Editor {
         self.player.pause();
     }
 
+    /// The clip as plugins see it.
+    pub fn clip_state(&self) -> plugin::ClipState {
+        plugin::ClipState {
+            path: self.path.clone(),
+            duration: self.info.duration,
+            fps: self.info.fps,
+            width: self.info.width,
+            height: self.info.height,
+            audio_names: self.info.audio_names.clone(),
+            start: self.timeline.start,
+            end: self.timeline.end,
+            playhead: self.player.position(),
+        }
+    }
+
+    /// Changes plugins asked for (markers, range, seeking).
+    fn apply_plugin_cmds(
+        &mut self,
+        cmds: Vec<ClipCmd>,
+        settings: &Settings,
+        mixer: Option<&rodio::mixer::Mixer>,
+    ) {
+        let dur = self.info.duration;
+        for c in cmds {
+            match c {
+                ClipCmd::AddMarker(m) => {
+                    if m.t.is_finite() {
+                        self.timeline.markers.push(plugin::Marker {
+                            t: m.t.clamp(0.0, dur),
+                            ..m
+                        });
+                    }
+                }
+                ClipCmd::ClearMarkers(p) => self.timeline.markers.retain(|m| m.plugin != p),
+                ClipCmd::SetRange(a, b) if self.render.is_none() => {
+                    let a = a.clamp(0.0, dur);
+                    let b = b.clamp(0.0, dur);
+                    if b - a >= super::timeline::MIN_LEN {
+                        self.timeline.start = a;
+                        self.timeline.end = b;
+                    }
+                }
+                ClipCmd::Seek(t) if self.render.is_none() => {
+                    self.player.pause();
+                    self.seek(t.clamp(0.0, dur), settings, mixer);
+                }
+                _ => {}
+            }
+        }
+    }
+
     /// Export with the chosen preset to `dst`, or to the export folder when None.
-    pub fn export(&mut self, settings: &Settings, dst: Option<PathBuf>) {
+    pub fn export(&mut self, settings: &Settings, dst: Option<PathBuf>, plugins: &mut Host) {
         if !self.can_export(settings) {
             return;
         }
@@ -229,7 +282,7 @@ impl Editor {
             return;
         }
         self.player.pause();
-        let job = Job {
+        let mut job = Job {
             src: self.path.clone(),
             dst: dst.unwrap_or_else(|| settings.output_path(&self.path, &preset.suffix)),
             preset,
@@ -239,7 +292,16 @@ impl Editor {
             denoise: self.denoise(),
             strength: settings.denoise_strength,
             encoder: settings.encoder,
+            extra: Default::default(),
         };
+        match plugins.export_start(&job) {
+            Ok(x) => job.extra = x,
+            Err(reason) => {
+                self.status = format!("A plugin cancelled the export: {reason}");
+                return;
+            }
+        }
+        let kept = job.clone();
         let (tx, rx) = mpsc::channel();
         let cancel = Arc::new(AtomicBool::new(false));
         let c = cancel.clone();
@@ -259,6 +321,7 @@ impl Editor {
         });
         self.status.clear();
         self.render = Some(RenderTask {
+            job: kept,
             rx,
             cancel,
             frac: 0.0,
@@ -336,8 +399,13 @@ impl Editor {
         ctx: &egui::Context,
         settings: &Settings,
         mixer: Option<&rodio::mixer::Mixer>,
+        plugins: &mut Host,
     ) -> Action {
         let mut action = Action::None;
+        let cmds = plugins.take_clip_cmds();
+        if !cmds.is_empty() {
+            self.apply_plugin_cmds(cmds, settings, mixer);
+        }
 
         // render progress
         if let Some(task) = &mut self.render {
@@ -350,7 +418,8 @@ impl Editor {
             }
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
             if let Some(r) = done {
-                self.render = None;
+                let task = self.render.take().unwrap();
+                plugins.export_done(&task.job, &r);
                 match r {
                     Ok(_) => return Action::Exported,
                     Err(e) => {
@@ -381,7 +450,10 @@ impl Editor {
                 self.player.pause();
                 self.seek(self.timeline.end, settings, mixer);
             }
-            ctx.request_repaint_after(std::time::Duration::from_millis(16));
+            // keeps the clock moving (new video frames request their own repaints). egui
+            // subtracts the predicted frame time (1/60 s) from the delay, so 16 ms would
+            // mean "right away": without vsync that's thousands of frames a second
+            ctx.request_repaint_after(std::time::Duration::from_millis(33));
         }
 
         // keyboard
@@ -438,6 +510,8 @@ impl Editor {
             }
         }
 
+        let mut tool_clicked = None;
+        let mut export_clicked = false;
         egui::TopBottomPanel::bottom("controls").show(ctx, |ui| {
             ui.add_space(4.0);
             ui.add_enabled_ui(!busy, |ui| {
@@ -453,6 +527,15 @@ impl Editor {
                         fmt_time(self.player.position()),
                         fmt_time(self.info.duration)
                     ));
+                    for t in plugins.toolbar_items() {
+                        let mut b = ui.button(t.label.as_str());
+                        if !t.tooltip.is_empty() {
+                            b = b.on_hover_text(t.tooltip.as_str());
+                        }
+                        if b.clicked() {
+                            tool_clicked = Some((t.plugin, t.item));
+                        }
+                    }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui
                             .add_enabled(self.can_export(settings), egui::Button::new("Export"))
@@ -462,7 +545,7 @@ impl Editor {
                             ))
                             .clicked()
                         {
-                            self.export(settings, None);
+                            export_clicked = true;
                         }
                         self.preset_combo(ui, settings);
                         self.audio_menu(ui, settings, mixer);
@@ -489,6 +572,16 @@ impl Editor {
             });
             ui.add_space(2.0);
         });
+        if export_clicked {
+            self.export(settings, None, plugins);
+        }
+        if let Some((p, i)) = tool_clicked {
+            let pctx = plugin::Ctx {
+                screen: plugin::Screen::Editor,
+                clip: Some(self.clip_state()),
+            };
+            plugins.run_toolbar(p, i, &pctx);
+        }
 
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.inner_margin(8.0))

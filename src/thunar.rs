@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
 
+use crate::plugin::ClipAction;
 use crate::settings::Settings;
 
 const SUBMENU: &str = "Clipman";
@@ -40,7 +41,7 @@ fn action(uid: &str, icon: &str, name: &str, command: &str, desc: &str, range: &
     )
 }
 
-pub fn actions_xml(s: &Settings, exe: &Path) -> String {
+pub fn actions_xml(s: &Settings, exe: &Path, plugin_actions: &[ClipAction]) -> String {
     let exe = quote(exe);
     let mut out: Vec<String> = s
         .presets
@@ -57,6 +58,17 @@ pub fn actions_xml(s: &Settings, exe: &Path) -> String {
             )
         })
         .collect();
+    // still "clipman-…", so is_ours covers them
+    for a in plugin_actions.iter().filter(|a| a.file_manager) {
+        out.push(action(
+            &format!("clipman-plugin-{}-{}", a.plugin_id, a.id),
+            "system-run",
+            &a.label,
+            &format!("{exe} --plugin-action {} %F", a.arg()),
+            &format!("Plugin: {}", a.plugin_id),
+            "",
+        ));
+    }
     out.push(action(
         "clipman-edit",
         "edit-cut",
@@ -75,8 +87,8 @@ fn is_ours(action: &str) -> bool {
 
 /// Replace our entries in uca.xml with ones generated from the presets. Other custom
 /// actions are kept; the previous file is saved as uca.xml.bak.
-pub fn write_actions(s: &Settings, exe: &Path) -> Result<PathBuf> {
-    replace_ours(&actions_xml(s, exe))
+pub fn write_actions(s: &Settings, exe: &Path, plugin_actions: &[ClipAction]) -> Result<PathBuf> {
+    replace_ours(&actions_xml(s, exe, plugin_actions))
 }
 
 /// Remove our entries from uca.xml (if it exists), keeping everything else.
@@ -136,7 +148,21 @@ mod tests {
     #[test]
     fn generates_and_replaces() {
         let s = Settings::default();
-        let xml = actions_xml(&s, Path::new("/usr/bin/clip man"));
+        let plugin = |id: &str, fm| ClipAction {
+            plugin_id: "up".into(),
+            id: id.into(),
+            label: format!("Upload {id}"),
+            file_manager: fm,
+        };
+        let xml = actions_xml(
+            &s,
+            Path::new("/usr/bin/clip man"),
+            &[plugin("a", true), plugin("b", false)],
+        );
+        assert!(xml.contains("<unique-id>clipman-plugin-up-a</unique-id>"));
+        assert!(xml.contains("<command>'/usr/bin/clip man' --plugin-action up:a %F</command>"));
+        assert!(!xml.contains("Upload b"));
+        assert!(is_ours(&xml[xml.find("<action>").unwrap()..]));
         assert!(xml.contains("<name>720p60 · 20 MB</name>"));
         assert!(xml.contains("<command>'/usr/bin/clip man' --preset secondary %F</command>"));
         assert!(!xml.contains("--preset original"));

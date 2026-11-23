@@ -6,6 +6,8 @@
 //!   clipman CLIP... --preset ID ...  render without the editor (progress in the
 //!                                    terminal, or in a small window when started
 //!                                    from a file manager)
+//!   clipman CLIP... --plugin-action PLUGIN:ACTION
+//!                                    run a plugin's clip action (file manager entries)
 
 // No console window for the GUI on Windows (the CLI re-attaches to its parent's).
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
@@ -16,6 +18,7 @@ mod gpu;
 mod media;
 mod menu;
 mod player;
+mod plugin;
 mod render;
 mod settings;
 #[cfg(any(target_os = "linux", test))]
@@ -30,6 +33,7 @@ use std::sync::atomic::AtomicBool;
 
 use clap::Parser;
 
+use plugin::Host;
 use settings::Settings;
 
 #[derive(Parser, Debug)]
@@ -86,6 +90,12 @@ struct Cli {
     /// Download / verify the noise suppression model, print its path and exit.
     #[arg(long)]
     fetch_model: bool,
+    /// Run a plugin's clip action on the clip(s), e.g. `upload:send`.
+    #[arg(long, value_name = "PLUGIN:ACTION")]
+    plugin_action: Option<String>,
+    /// Don't load any plugins.
+    #[arg(long)]
+    no_plugins: bool,
 }
 
 impl Cli {
@@ -153,13 +163,14 @@ fn build_jobs(cli: &Cli, settings: &Settings) -> Result<Vec<render::Job>, String
             denoise: denoise.clone().unwrap_or(d_denoise),
             strength: settings.denoise_strength,
             encoder: cli.encoder.unwrap_or(settings.encoder),
+            extra: Default::default(),
         });
     }
     Ok(jobs)
 }
 
 /// Render in the terminal with a one-line progress display.
-fn render_in_terminal(jobs: &[render::Job]) -> ExitCode {
+fn render_in_terminal(jobs: &[render::Job], host: &mut Host) -> ExitCode {
     let cancel = AtomicBool::new(false);
     let mut failed = false;
     for (i, job) in jobs.iter().enumerate() {
@@ -183,22 +194,33 @@ fn render_in_terminal(jobs: &[render::Job]) -> ExitCode {
                 last = line;
             }
         };
-        match render::render(job, &mut report, &cancel) {
+        let res = render::render(job, &mut report, &cancel).map_err(|e| format!("{e:#}"));
+        match &res {
             Ok((p, size)) => eprintln!(
                 "\r{prefix}{} ({:.2} MB)\x1b[K",
                 p.display(),
-                size as f64 / 1e6
+                *size as f64 / 1e6
             ),
             Err(e) => {
-                eprintln!("\r{prefix}{name}: {e:#}\x1b[K");
+                eprintln!("\r{prefix}{name}: {e}\x1b[K");
                 failed = true;
             }
         }
+        host.export_done(job, &res);
+        print_notices(host);
     }
+    host.wait_idle();
+    print_notices(host);
     if failed {
         ExitCode::FAILURE
     } else {
         ExitCode::SUCCESS
+    }
+}
+
+fn print_notices(host: &mut Host) {
+    for n in host.take_notices() {
+        eprintln!("clipman: {n}");
     }
 }
 
@@ -251,10 +273,16 @@ fn main() -> ExitCode {
     if cli.fetch_model {
         return print_or_fail(render::ensure_model().map(|p| p.display().to_string()));
     }
+    let settings = Settings::load();
+    let mut host = if cli.no_plugins {
+        Host::none()
+    } else {
+        Host::load(&settings)
+    };
     if cli.write_menu {
         let res = std::env::current_exe()
             .map_err(anyhow::Error::from)
-            .and_then(|exe| menu::write(&Settings::load(), &exe));
+            .and_then(|exe| menu::write(&settings, &exe, &host.clip_actions()));
         return print_or_fail(res);
     }
     if cli.remove_menu {
@@ -267,8 +295,43 @@ fn main() -> ExitCode {
 
     let start = if cli.settings {
         ui::Start::Settings
+    } else if let Some(arg) = &cli.plugin_action {
+        let Some((plugin, action)) = arg.split_once(':') else {
+            error_dialog("--plugin-action takes PLUGIN:ACTION");
+            return ExitCode::FAILURE;
+        };
+        if cli.files.is_empty() {
+            error_dialog("--plugin-action needs a clip");
+            return ExitCode::FAILURE;
+        }
+        if cli.no_window || std::io::stderr().is_terminal() {
+            let ctx = plugin::Ctx {
+                screen: plugin::Screen::Other,
+                clip: None,
+            };
+            let res = host.run_clip_action(plugin, action, &cli.files, &ctx);
+            host.wait_idle();
+            print_notices(&mut host);
+            return match res {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("clipman: {e}");
+                    ExitCode::FAILURE
+                }
+            };
+        }
+        ui::Start::PluginAction {
+            plugin: plugin.to_string(),
+            action: action.to_string(),
+            files: cli.files.clone(),
+        }
     } else if cli.wants_render() {
-        let jobs = match build_jobs(&cli, &Settings::load()) {
+        let jobs = match build_jobs(&cli, &settings).and_then(|mut jobs| {
+            for j in &mut jobs {
+                j.extra = host.export_start(j)?;
+            }
+            Ok(jobs)
+        }) {
             Ok(j) if !j.is_empty() => j,
             Ok(_) => {
                 error_dialog("No clips given.");
@@ -279,8 +342,9 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             }
         };
+        print_notices(&mut host);
         if cli.no_window || std::io::stderr().is_terminal() {
-            return render_in_terminal(&jobs);
+            return render_in_terminal(&jobs, &mut host);
         }
         ui::Start::Render(jobs)
     } else if let Some(f) = cli.files.first() {
@@ -292,7 +356,7 @@ fn main() -> ExitCode {
     } else {
         ui::Start::Browser
     };
-    match ui::run(start) {
+    match ui::run(start, host) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             error_dialog(&format!("Couldn't open a window: {e}"));

@@ -53,6 +53,18 @@ Notes for coding agents working on clipman. Read README.md first for what it doe
   ffmpeg costs ~70 ms of setup, so seeks and the strip are slower on the GPU (the strip and a
   seek also contend for the one decoder); playback halves CPU use but starts ~80 ms later.
   AMD has no JPEG encoder, so the strip can't stay on the GPU.
+- `src/plugin/`: Lua 5.4 plugins (mlua, vendored; `plugins` cargo feature, default on;
+  `stub.rs` is a no-op `Host` with the same API for `--no-default-features`). `host.rs`
+  loads `<config>/plugins/<id>/init.lua` (one `Lua` per plugin, full stdlib by the user's
+  choice: plugins are trusted like a config file), installs the `clipman` table, and calls
+  into plugins through `Plugin::guard`: an error or a callback over its time budget (an
+  instruction-count hook) stops that plugin for the session. Lua calls queue requests
+  (`Shared`: clip commands, windows, `spawn`s, notices), which the host handles after the
+  call. `ui.rs` wraps `&mut egui::Ui` as scoped userdata (value in, value out widgets).
+  `meta.rs` is the source-clip sidecar `<clip>.clipman.json`. `docs/plugins.md` is the API
+  reference; `examples/plugins` are tested by `examples_load`. Plugin clip actions with
+  `file_manager = true` become `clipman-plugin-<plugin>-<id>` Thunar entries and numbered
+  Explorer subkeys running `--plugin-action`.
 - `src/update.rs`: update checker (`update-check` cargo feature, default on; the PKGBUILD
   builds without it). GUI windows only, never CLI renders: one GitHub `releases/latest`
   request a day, cached with the dismissed version in `<cache>/update-check.json`. The UI
@@ -66,7 +78,10 @@ Notes for coding agents working on clipman. Read README.md first for what it doe
   that `clipman` key is ever written or deleted.
 - `src/ui/`: eframe app. `mod.rs` (screens, the File/Help menu bar and its shortcuts
   (`MenuCmd`), the CLI render window), `browser.rs`, `editor.rs`,
-  `settings.rs` (modal dialog), `timeline.rs` (custom range widget).
+  `settings.rs` (modal dialog), `plugins.rs` (the Plugins dialog: an Installed tab to turn
+  plugins on/off plus a settings tab per plugin; opened from the Plugins menu or Settings'
+  *Manage plugins…*, drawn over Settings, saves only `settings.plugins` and keeps Settings'
+  draft in sync via `set_plugins`), `timeline.rs` (custom range widget).
 - `packaging/arch/PKGBUILD`: `clipman-video-git` (VCS package; the name avoids the AUR's
   unrelated `clipman` clipboard manager, and it declares `conflicts` with it because both ship
   `/usr/bin/clipman`). Needs `options=('!lto')`: makepkg's LTO makes `ring`'s C objects
@@ -89,6 +104,20 @@ Notes for coding agents working on clipman. Read README.md first for what it doe
 
 ## Gotchas (all hit during development)
 
+- **Lua only runs on the UI thread** (or main, for CLI renders). Plugin additions reach a
+  render only through `Job.extra` (`render::Extra`), filled by `Host::export_start` before
+  the job starts, so `render()` never touches Lua. Keep it that way: mlua's `Lua` is `!Send`
+  here (no `send` feature). The CLI render path loads plugins too, so a Thunar render gets
+  the same filters and metadata as the editor.
+- Plugin `vf` goes after clipman's scale but before the GPU encoder's `hwupload` suffix
+  (software filters first). Text in a filter option needs two escaping levels (option, then
+  graph); `plugin::filter_escape` does both and is checked against real drawtext. Quoting
+  with `'…'` breaks on apostrophes.
+- Windows that close after exporting (`close_when_idle` in `ui/mod.rs`) wait for plugin
+  processes and windows, or `on_export_done` uploads would die with the process.
+- Several shortcuts can land in one frame (scripted input does this): `plugin_shortcuts`
+  returns every match, not the first.
+
 - **Exported clips carry metadata** (`Meta` in `render.rs`): a `clipman` JSON tag plus
   `comment`. mp4 drops custom keys unless `-movflags +use_metadata_tags`; that mode also
   duplicates the source's global tags, hence `-map_metadata:g -1`. Store the source's file
@@ -107,6 +136,11 @@ Notes for coding agents working on clipman. Read README.md first for what it doe
   streams and breaks audio. Use `.args(["-vf", …])` for video filters.
 - ffmpeg-sidecar asserts that stdin/stdout/stderr are all piped (it panics otherwise). For raw
   PCM, use `pipe_stdout()` + `take_stdout()` and drain stderr in a thread.
+- **No vsync** (`vsync: false` in `ui::run`): with it, presenting waits for a Wayland frame
+  callback, which a window on a hidden workspace never gets, so the UI thread blocks and
+  Hyprland shows "not responding". Without vsync's cap, a repaint loop runs flat out, and
+  egui subtracts the predicted frame time (1/60 s) from `request_repaint_after`: a 16 ms
+  delay means "now" (8000+ fps). Use 33 ms or more for timers.
 - **Never call an `rfd` dialog on the UI thread.** It blocks drawing until the dialog closes
   and Hyprland then reports clipman as not responding. Use `ui::PendingDialog::spawn` (runs
   it on a thread, poll the result each frame), as Open, Export As and the Settings folder
@@ -125,6 +159,10 @@ Notes for coding agents working on clipman. Read README.md first for what it doe
   clamps to `duration - 0.05` and steps back if a decode comes out empty.
 - egui's default fonts lack arrows (→ ←); they render as boxes. ✔ ✖ · – … are fine.
 - In `egui::Grid`, `TextEdit::desired_width` is ignored; use `ui.add_sized`.
+- `ui.add_space` inside an `egui::Grid` is a **debug-build panic** (release builds skip the
+  assertion, so release-only testing misses it). Wrap it in `ui.horizontal`. The headless
+  UI tests (`draws_plugin_settings`, `draws_every_widget`) draw with `egui::Context::run` in
+  debug builds to catch these.
 - The editor sizes its window so the video area matches the clip's aspect (`fit_window`,
   first few frames). Don't put a `size` in the Hyprland rule.
 - Hyprland is configured in **Lua** (`hl.window_rule{…}`); the window class / app_id is `clipman`.
@@ -150,6 +188,12 @@ Notes for coding agents working on clipman. Read README.md first for what it doe
   doesn't take focus on its own. `hyprctl eval 'hl.window_rule{…}'` adds a temporary rule (gone after
   `hyprctl reload`). `grim -g "x,y wxh"` takes screenshots. Don't `pkill -f clipman` from a
   shell whose own command line contains "clipman"; it kills that shell.
+- Screenshots without touching the user's screens: `hyprctl output create headless NAME`,
+  then move the window there with
+  `hyprctl dispatch "hl.dsp.window.move({ workspace = N, follow = false, window = 'pid:P' })"`,
+  then `grim -o NAME`. `hyprctl eval 'hl.monitor({ output = "NAME", mode = "1600x2400@60", position = "5120x0", scale = 1 })'`
+  makes it taller (egui remembers a modal's size, so reopen the dialog in a fresh process
+  afterwards). Clean up with `hyprctl output remove NAME`.
 - Windows compile check from Linux: `cargo check --target x86_64-pc-windows-gnu --no-default-features`
   (the `download` feature's TLS crate needs MinGW headers to cross-compile; native Windows
   builds are fine).

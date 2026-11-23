@@ -214,6 +214,28 @@ pub struct Settings {
     /// Keyed by the track's name tag in the clip (as set in GPU Screen Recorder).
     #[serde(default = "d_tracks")]
     pub tracks: IndexMap<String, TrackCfg>,
+    /// Per plugin (keyed by its folder name): on/off and the values of its settings.
+    #[serde(default)]
+    pub plugins: IndexMap<String, PluginCfg>,
+}
+
+/// A plugin's entry in the settings. Plugins without one are enabled.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct PluginCfg {
+    #[serde(default = "d_true")]
+    pub enabled: bool,
+    /// Values for the settings the plugin declares (missing ones use its defaults).
+    #[serde(default)]
+    pub values: serde_json::Map<String, serde_json::Value>,
+}
+
+impl Default for PluginCfg {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            values: Default::default(),
+        }
+    }
 }
 
 impl Default for Settings {
@@ -228,6 +250,7 @@ impl Default for Settings {
             export_folder: None,
             presets: d_presets(),
             tracks: d_tracks(),
+            plugins: IndexMap::new(),
         }
     }
 }
@@ -274,6 +297,12 @@ pub fn cache_dir() -> PathBuf {
     dirs::cache_dir()
         .unwrap_or_else(std::env::temp_dir)
         .join("clipman")
+}
+
+/// Plugins live in `<config>/plugins/<id>/init.lua`.
+#[cfg_attr(not(feature = "plugins"), allow(dead_code))]
+pub fn plugins_dir() -> PathBuf {
+    config_dir().join("plugins")
 }
 
 pub fn settings_path() -> PathBuf {
@@ -327,6 +356,11 @@ impl Settings {
                 .unwrap_or_else(|| PathBuf::from("."))
                 .join("Exports")
         })
+    }
+
+    #[cfg_attr(not(feature = "plugins"), allow(dead_code))]
+    pub fn plugin_enabled(&self, id: &str) -> bool {
+        self.plugins.get(id).is_none_or(|c| c.enabled)
     }
 
     pub fn preset(&self, id: &str) -> Option<&Preset> {

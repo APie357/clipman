@@ -32,8 +32,9 @@ Render options (any of them switches to rendering):
 When started from a terminal, renders show progress there. When started from a file
 manager, they open a small progress window that closes itself when done. Other commands:
 `--write-menu` (regenerate the right-click menu: Thunar on Linux, Explorer on Windows),
-`--remove-menu` (remove clipman's entries from it) and `--fetch-model` (download the noise
-suppression model).
+`--remove-menu` (remove clipman's entries from it), `--fetch-model` (download the noise
+suppression model), `--plugin-action PLUGIN:ACTION` (run a plugin's clip action on the given
+clips) and `--no-plugins` (start without loading plugins).
 
 ## Menu bar
 
@@ -48,7 +49,10 @@ The browser and the editor share a menu bar:
 | File | Back to clip browser (editor opened from the browser) | |
 | File | Settings… | Ctrl+, |
 | File | Quit | Ctrl+Q |
+| Plugins | Manage plugins… (on/off and each plugin's settings), Reload plugins, Open plugins folder | |
 | Help | Version, update status and the project page | |
+
+Plugins can add their own dropdowns between File and Plugins.
 
 ## Clip browser
 
@@ -133,6 +137,21 @@ Stored as JSON in `~/.config/clipman/settings.json` (Windows: `%APPDATA%\clipman
 - **Audio tracks**: matched by the name stored in the clip (set in GPU Screen Recorder).
   For each name: how it's shown, whether it's ticked by default, and noise suppression
   (*Not offered* / *Offered (off)* / *On by default*). Unnamed tracks show as "Track N".
+
+## Plugins
+
+Plugins are Lua scripts in `~/.config/clipman/plugins/<id>/init.lua`
+(`%APPDATA%\clipman\plugins` on Windows). Lua is built into clipman. A plugin can add its own
+dropdown menus, editor buttons and windows; keep metadata on source clips (in a
+`clip.mp4.clipman.json` sidecar) and add it to exports; add ffmpeg filters and options to
+exports; put markers on the timeline; show badges and right-click actions in the browser
+(and in Thunar's or Explorer's menu); and declare settings. *Plugins → Manage plugins…*
+(also a button in Settings) turns plugins on or off and has a settings tab per plugin. Plugins run with your permissions, so only install ones you trust.
+
+See [docs/plugins.md](docs/plugins.md) for the API, and
+[examples/plugins](examples/plugins) for working examples: game tags, timeline bookmarks, a
+watermark, and copying exports to the clipboard. Copy one into the plugins folder and use
+*Plugins → Reload plugins*.
 
 ## Noise suppression model
 

@@ -188,6 +188,25 @@ pub fn probe(path: &Path) -> Result<ClipInfo> {
     Ok(info)
 }
 
+/// One container-level tag (e.g. the `clipman` JSON of an exported clip).
+#[cfg_attr(not(feature = "plugins"), allow(dead_code))]
+pub fn container_tag(path: &Path, key: &str) -> Option<String> {
+    let out = quiet_command(ffprobe_bin())
+        .args(["-v", "error", "-show_entries"])
+        .arg(format!("format_tags={key}"))
+        .args(["-of", "json"])
+        .arg(path)
+        .output()
+        .ok()?;
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
+    let tags = v.get("format")?.get("tags")?.as_object()?;
+    // container tag keys can come back in another case
+    tags.iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case(key))
+        .and_then(|(_, v)| v.as_str())
+        .map(str::to_string)
+}
+
 fn parse_rate(r: &str) -> f64 {
     match r.split_once('/') {
         Some((a, b)) => {

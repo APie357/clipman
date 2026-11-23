@@ -7,6 +7,7 @@
 
 use std::path::Path;
 
+use crate::plugin::ClipAction;
 use crate::settings::Settings;
 
 /// File types that get the menu (Explorer matches extensions case-insensitively).
@@ -30,7 +31,7 @@ fn quote(p: &Path) -> String {
 }
 
 /// Every key to create for one extension, parents first.
-pub fn keys(s: &Settings, exe: &Path, ext: &str) -> Vec<Key> {
+pub fn keys(s: &Settings, exe: &Path, ext: &str, plugin_actions: &[ClipAction]) -> Vec<Key> {
     let root = root_key(ext);
     let exe = quote(exe);
     let mut keys = vec![Key {
@@ -57,17 +58,30 @@ pub fn keys(s: &Settings, exe: &Path, ext: &str) -> Vec<Key> {
             format!("{exe} --preset {} \"%1\"", p.id),
         );
     }
-    entry(presets.len() + 1, "Open in Clipman…".into(), format!("{exe} \"%1\""));
+    let mut n = presets.len();
+    for a in plugin_actions.iter().filter(|a| a.file_manager) {
+        n += 1;
+        entry(
+            n,
+            a.label.clone(),
+            format!("{exe} --plugin-action {} \"%1\"", a.arg()),
+        );
+    }
+    entry(n + 1, "Open in Clipman…".into(), format!("{exe} \"%1\""));
     keys
 }
 
 /// Replace our entries with ones generated from the presets. Returns a description of
 /// where they went.
 #[cfg(windows)]
-pub fn write_actions(s: &Settings, exe: &Path) -> anyhow::Result<String> {
+pub fn write_actions(
+    s: &Settings,
+    exe: &Path,
+    plugin_actions: &[ClipAction],
+) -> anyhow::Result<String> {
     for ext in EXTENSIONS {
         reg::delete_tree(&root_key(ext))?;
-        for k in keys(s, exe, ext) {
+        for k in keys(s, exe, ext, plugin_actions) {
             reg::write(&k)?;
         }
     }
@@ -180,7 +194,7 @@ mod tests {
     #[test]
     fn generates_keys() {
         let s = Settings::default();
-        let keys = keys(&s, Path::new(r"C:\Program Files\clipman\clipman.exe"), ".mp4");
+        let keys = keys(&s, Path::new(r"C:\Program Files\clipman\clipman.exe"), ".mp4", &[]);
         let root = r"Software\Classes\SystemFileAssociations\.mp4\shell\clipman";
         assert_eq!(keys[0].path, root);
         assert!(keys[0].values.contains(&("SubCommands", String::new())));
@@ -198,7 +212,21 @@ mod tests {
         assert!(keys.iter().all(|k| k.path.starts_with(root)));
         assert_eq!(keys.len(), 1 + 3 * 2);
         for ext in EXTENSIONS {
-            assert!(super::keys(&s, Path::new("c.exe"), ext)[0].path.contains(ext));
+            assert!(super::keys(&s, Path::new("c.exe"), ext, &[])[0].path.contains(ext));
         }
+        let up = ClipAction {
+            plugin_id: "up".into(),
+            id: "send".into(),
+            label: "Upload".into(),
+            file_manager: true,
+        };
+        let keys = super::keys(&s, Path::new("c.exe"), ".mp4", &[up]);
+        let find = |p: &str| keys.iter().find(|k| k.path == format!(r"{root}\{p}")).unwrap();
+        assert_eq!(find(r"shell\03").values, [("MUIVerb", "Upload".into())]);
+        assert_eq!(
+            find(r"shell\03\command").values,
+            [("", r#""c.exe" --plugin-action up:send "%1""#.into())]
+        );
+        assert_eq!(find(r"shell\04").values, [("MUIVerb", "Open in Clipman…".into())]);
     }
 }
