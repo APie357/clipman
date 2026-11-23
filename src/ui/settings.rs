@@ -230,7 +230,7 @@ impl SettingsUi {
             .save()
             .map_err(anyhow::Error::from)
             .and_then(|_| {
-                crate::menu::write(&s, &std::env::current_exe()?, &self.plugin_actions)
+                crate::menu::write(&s, &crate::menu::self_exe()?, &self.plugin_actions)
             });
         match res {
             Ok(place) => {

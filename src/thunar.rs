@@ -12,10 +12,31 @@ use crate::settings::Settings;
 const SUBMENU: &str = "Clipman";
 
 pub fn uca_path() -> PathBuf {
-    dirs::config_dir()
+    host_config_dir()
         .unwrap_or_default()
         .join("Thunar")
         .join("uca.xml")
+}
+
+/// Inside a Flatpak, the config dir is the app's own (`~/.var/app/<id>/config`); Thunar
+/// reads the host's, which flatpak passes as `HOST_XDG_CONFIG_HOME` (unset = default).
+fn host_config_dir() -> Option<PathBuf> {
+    if std::env::var_os("FLATPAK_ID").is_none() {
+        return dirs::config_dir();
+    }
+    std::env::var_os("HOST_XDG_CONFIG_HOME")
+        .filter(|d| !d.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|h| h.join(".config")))
+}
+
+/// How Thunar starts clipman: inside a Flatpak the executable's path only exists in the
+/// sandbox, so through `flatpak run`; otherwise the executable, quoted.
+fn launcher(exe: &Path) -> String {
+    match std::env::var("FLATPAK_ID") {
+        Ok(id) if !id.is_empty() => format!("flatpak run {}", quote(Path::new(&id))),
+        _ => quote(exe),
+    }
 }
 
 fn esc(s: &str) -> String {
@@ -41,8 +62,8 @@ fn action(uid: &str, icon: &str, name: &str, command: &str, desc: &str, range: &
     )
 }
 
-pub fn actions_xml(s: &Settings, exe: &Path, plugin_actions: &[ClipAction]) -> String {
-    let exe = quote(exe);
+/// `exe` is the command line that starts clipman, already quoted (see `launcher`).
+pub fn actions_xml(s: &Settings, exe: &str, plugin_actions: &[ClipAction]) -> String {
     let mut out: Vec<String> = s
         .presets
         .iter()
@@ -88,7 +109,7 @@ fn is_ours(action: &str) -> bool {
 /// Replace our entries in uca.xml with ones generated from the presets. Other custom
 /// actions are kept; the previous file is saved as uca.xml.bak.
 pub fn write_actions(s: &Settings, exe: &Path, plugin_actions: &[ClipAction]) -> Result<PathBuf> {
-    replace_ours(&actions_xml(s, exe, plugin_actions))
+    replace_ours(&actions_xml(s, &launcher(exe), plugin_actions))
 }
 
 /// Remove our entries from uca.xml (if it exists), keeping everything else.
@@ -156,7 +177,7 @@ mod tests {
         };
         let xml = actions_xml(
             &s,
-            Path::new("/usr/bin/clip man"),
+            &quote(Path::new("/usr/bin/clip man")),
             &[plugin("a", true), plugin("b", false)],
         );
         assert!(xml.contains("<unique-id>clipman-plugin-up-a</unique-id>"));

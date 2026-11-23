@@ -95,8 +95,21 @@ Notes for coding agents working on clipman. Read README.md first for what it doe
   `makepkg -f` (it builds the latest commit pushed to GitHub, not the working tree). If
   dynamic libraries change, re-check `depends` against `ldd` plus the dlopened
   Wayland/X11/GL libs.
-- `scripts/build-appimage.sh`: AppImage via linuxdeploy (downloaded to `target/tools`,
-  run with `APPIMAGE_EXTRACT_AND_RUN=1` so no FUSE is needed). ffmpeg isn't bundled.
+- `packaging/appimage/build-appimage.sh`: AppImage via linuxdeploy (downloaded to
+  `target/tools`, run with `APPIMAGE_EXTRACT_AND_RUN=1` so no FUSE is needed). ffmpeg isn't
+  bundled. The Thunar menu runs `$APPIMAGE` (`menu::self_exe`): the mount path changes.
+- `packaging/flatpak/`: manifest (`men.goobers.clipman`, Freedesktop 26.08 + rust-stable,
+  cargo fetches with `--share=network`, so not Flathub-ready), metainfo and
+  `build-flatpak.sh` (bundle in `target/flatpak/`; uses `flatpak-builder` or the
+  `org.flatpak.Builder` app). The Wayland app_id stays `clipman` (`StartupWMClass`). In the
+  sandbox (`FLATPAK_ID` set) the Thunar menu goes to the host's config
+  (`HOST_XDG_CONFIG_HOME`) and runs `flatpak run <id>`; config and cache are under
+  `~/.var/app/<id>/`. ffmpeg is the runtime's (`/usr/bin/ffmpeg`, full codecs via
+  codecs-extra, VAAPI works with `--device=dri`). Flatpak sets `HOST_XDG_CONFIG_HOME` itself
+  (`--env` can't override it), so testing `--write-menu` in the sandbox writes the real
+  `~/.config/Thunar/uca.xml` (restore it from `uca.xml.bak`). CI builds it in the `flatpak`
+  job (flatpak-github-actions container) and the release attaches the bundle. The SDK's
+  newer Rust warns where `Stroke::new(1.0, …)` literals fall back to f32; write `1.0_f32`.
 - `.github/workflows/build.yml`: Linux (ubuntu-22.04 for an old glibc baseline: tests, the
   AppImage and a tarball) and Windows (tests, a zipped exe) on push/PR; `v*` tags also publish
   a release. A `check` job makes a branch push skip its build when a `v*` tag points at the
@@ -105,8 +118,8 @@ Notes for coding agents working on clipman. Read README.md first for what it doe
   runs). Bump `version` in Cargo.toml first, or the update checker offers the release to
   itself. The repo is public, so Actions minutes are free. Workflows from forks' pull
   requests get a read-only token; only the tag-triggered release job can write.
-- `scripts/install.sh`: Linux installer. `--hyprland` / `--gsr` are opt-in. `extras/` holds
-  the Hyprland rule, the desktop entry and the GSR config snapshot (`@HOME@` placeholders).
+- `install.sh`: per-user Linux install (binary, desktop entry, icons, Thunar menu).
+  `extras/` holds the desktop entry template (`@EXE@`) and the icons.
 
 ## Gotchas (all hit during development)
 
@@ -170,7 +183,7 @@ Notes for coding agents working on clipman. Read README.md first for what it doe
   UI tests (`draws_plugin_settings`, `draws_every_widget`) draw with `egui::Context::run` in
   debug builds to catch these.
 - The editor sizes its window so the video area matches the clip's aspect (`fit_window`,
-  first few frames). Don't put a `size` in the Hyprland rule.
+  first few frames). Don't put a `size` in a Hyprland window rule for it.
 - Hyprland is configured in **Lua** (`hl.window_rule{…}`); the window class / app_id is `clipman`.
 
 ## Testing

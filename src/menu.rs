@@ -8,6 +8,19 @@ use anyhow::Result;
 use crate::plugin::ClipAction;
 use crate::settings::Settings;
 
+/// The executable the menu entries should run. An AppImage runs from a mount point that
+/// changes every time, so it's the AppImage file itself (`$APPIMAGE`).
+pub fn self_exe() -> std::io::Result<std::path::PathBuf> {
+    #[cfg(target_os = "linux")]
+    if let Some(p) = std::env::var_os("APPIMAGE")
+        .map(std::path::PathBuf::from)
+        .filter(|p| p.is_file())
+    {
+        return Ok(p);
+    }
+    std::env::current_exe()
+}
+
 /// Whether this platform has a right-click menu clipman can manage.
 pub const SUPPORTED: bool = cfg!(any(target_os = "linux", windows));
 

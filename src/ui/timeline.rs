@@ -154,7 +154,7 @@ impl Timeline {
         p.rect_stroke(
             sel,
             CornerRadius::ZERO,
-            Stroke::new(1.0, accent),
+            Stroke::new(1.0_f32, accent),
             egui::StrokeKind::Inside,
         );
 
@@ -181,7 +181,7 @@ impl Timeline {
                         Pos2::new(cx + dx, h.top() + 10.0),
                         Pos2::new(cx + dx, h.bottom() - 4.0),
                     ],
-                    Stroke::new(1.0, grip),
+                    Stroke::new(1.0_f32, grip),
                 );
             }
         }
@@ -201,7 +201,7 @@ impl Timeline {
             p.add(egui::Shape::convex_polygon(pts, color, Stroke::NONE));
             p.line_segment(
                 [Pos2::new(x, track.top()), Pos2::new(x, track.bottom())],
-                Stroke::new(1.0, color.gamma_multiply(0.7)),
+                Stroke::new(1.0_f32, color.gamma_multiply(0.7)),
             );
         }
         let hovered_marker = hover_x

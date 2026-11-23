@@ -1,0 +1,56 @@
+# SPDX-License-Identifier: Apache-2.0
+# Flatpak of clipman. Build a bundle with packaging/flatpak/build-flatpak.sh.
+#
+# Cargo fetches the crates during the build (build-args: --share=network), so this builds
+# with flatpak-builder as is but not on Flathub, which needs offline sources
+# (flatpak-cargo-generator).
+#
+# ffmpeg isn't bundled: inside the sandbox there's none on PATH, so clipman downloads a
+# static build into ~/.var/app/men.goobers.clipman/data/clipman/ffmpeg on first run,
+# like the AppImage does.
+id: men.goobers.clipman
+runtime: org.freedesktop.Platform
+runtime-version: "26.08"
+sdk: org.freedesktop.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: clipman
+finish-args:
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --share=ipc
+  - --device=dri # GPU rendering, VAAPI encoding and decoding
+  - --socket=pulseaudio # preview audio (ALSA through the runtime's PulseAudio plugin)
+  # update check, the RNNoise model and the ffmpeg download
+  - --share=network
+  # clips can be in any folder (Settings), and sidecars and exports are written next to
+  # / near them; the Thunar menu is written to the host's ~/.config/Thunar
+  - --filesystem=home
+modules:
+  - name: clipman
+    buildsystem: simple
+    build-options:
+      append-path: /usr/lib/sdk/rust-stable/bin
+      build-args:
+        - --share=network
+      env:
+        CARGO_HOME: /run/build/clipman/cargo
+    build-commands:
+      - cargo build --release --locked
+      - install -Dm755 target/release/clipman /app/bin/clipman
+      - >-
+        sed -e 's|@EXE@|clipman|' -e 's|^Icon=.*|Icon=men.goobers.clipman|'
+        extras/clipman.desktop > men.goobers.clipman.desktop
+      - install -Dm644 men.goobers.clipman.desktop -t /app/share/applications
+      - install -Dm644 extras/clipman.svg /app/share/icons/hicolor/scalable/apps/men.goobers.clipman.svg
+      - install -Dm644 extras/clipman.png /app/share/icons/hicolor/256x256/apps/men.goobers.clipman.png
+      - install -Dm644 packaging/flatpak/men.goobers.clipman.metainfo.xml -t /app/share/metainfo
+    sources:
+      - type: dir
+        path: ../..
+        skip:
+          - target
+          - .git
+          - packaging/arch/src
+          - packaging/arch/pkg
+          - packaging/arch/clipman

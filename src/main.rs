@@ -280,7 +280,7 @@ fn main() -> ExitCode {
         Host::load(&settings)
     };
     if cli.write_menu {
-        let res = std::env::current_exe()
+        let res = menu::self_exe()
             .map_err(anyhow::Error::from)
             .and_then(|exe| menu::write(&settings, &exe, &host.clip_actions()));
         return print_or_fail(res);

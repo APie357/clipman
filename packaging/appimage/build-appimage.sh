@@ -11,7 +11,7 @@
 # needs a glibc at least as new as the build machine's.
 set -euo pipefail
 
-REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO"
 ARCH="${ARCH:-$(uname -m)}"
 OUT="$REPO/target/appimage"

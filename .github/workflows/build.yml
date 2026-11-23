@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-# Builds and tests clipman for Linux (binary + AppImage) and Windows on every push to
+# Builds and tests clipman for Linux (binary, AppImage, Flatpak) and Windows on every push to
 # main and on pull requests. Pushing a tag like v0.2.0 also publishes a GitHub release
 # with those files attached.
 #
@@ -58,7 +58,7 @@ jobs:
       - name: Test
         run: cargo test --release --locked
       - name: AppImage
-        run: scripts/build-appimage.sh
+        run: packaging/appimage/build-appimage.sh
       - name: Package
         run: |
           mkdir -p dist
@@ -70,6 +70,26 @@ jobs:
           name: clipman-linux
           path: dist/*
           if-no-files-found: error
+
+  flatpak:
+    needs: check
+    if: needs.check.outputs.tagged != 'true'
+    runs-on: ubuntu-latest
+    # has flatpak-builder and the Freedesktop runtime and SDK; the action installs the
+    # Rust extension from Flathub
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-26.08
+      options: --privileged
+    steps:
+      - uses: actions/checkout@v7
+      - id: version
+        run: echo "version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)" >> "$GITHUB_OUTPUT"
+      - uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+        with:
+          manifest-path: packaging/flatpak/men.goobers.clipman.yml
+          bundle: Clipman-${{ steps.version.outputs.version }}-x86_64.flatpak
+          artifact-name: clipman-flatpak
+          cache-key: flatpak-builder-${{ hashFiles('Cargo.lock', 'packaging/flatpak/*.yml') }}
 
   windows:
     needs: check
@@ -97,7 +117,7 @@ jobs:
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [linux, windows]
+    needs: [linux, flatpak, windows]
     runs-on: ubuntu-latest
     permissions:
       contents: write

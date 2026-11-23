@@ -80,8 +80,4 @@ package() {
   install -Dm644 extras/clipman.png "${pkgdir}/usr/share/icons/hicolor/256x256/apps/clipman.png"
   install -Dm644 extras/clipman.svg "${pkgdir}/usr/share/icons/hicolor/scalable/apps/clipman.svg"
   install -Dm644 README.md "${pkgdir}/usr/share/doc/${_name}/README.md"
-  # opt-in extras: Hyprland window rule and a GPU Screen Recorder config
-  install -Dm644 extras/hyprland/clipman.lua "${pkgdir}/usr/share/${_name}/hyprland/clipman.lua"
-  install -Dm644 extras/gpu-screen-recorder/config_ui \
-    "${pkgdir}/usr/share/${_name}/gpu-screen-recorder/config_ui"
 }

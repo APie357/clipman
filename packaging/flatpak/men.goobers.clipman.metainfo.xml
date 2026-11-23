@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<component type="desktop-application">
+  <id>men.goobers.clipman</id>
+  <name>Clipman</name>
+  <summary>Browse, trim and compress game clips</summary>
+  <developer id="men.goobers">
+    <name>APie357</name>
+  </developer>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>Apache-2.0</project_license>
+  <description>
+    <p>
+      A native clip browser, trimmer and compressor for game clips, made for GPU Screen
+      Recorder replays that need to fit Discord's upload limit.
+    </p>
+    <ul>
+      <li>Browse a folder of clips with thumbnails</li>
+      <li>Trim frame-exactly, pick and mix audio tracks, and suppress noise</li>
+      <li>Export with presets that hit a size limit (two-pass x264 or GPU encoding)</li>
+      <li>Extend it with Lua plugins</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">men.goobers.clipman.desktop</launchable>
+  <url type="homepage">https://github.com/APie357/clipman</url>
+  <url type="bugtracker">https://github.com/APie357/clipman/issues</url>
+  <url type="help">https://github.com/APie357/clipman/wiki</url>
+  <content_rating type="oars-1.1"/>
+  <provides>
+    <binary>clipman</binary>
+  </provides>
+</component>

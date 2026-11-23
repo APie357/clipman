@@ -427,7 +427,7 @@ impl Browser {
             p.rect_stroke(
                 img,
                 6.0,
-                egui::Stroke::new(2.0, ui.visuals().selection.bg_fill),
+                egui::Stroke::new(2.0_f32, ui.visuals().selection.bg_fill),
                 egui::StrokeKind::Outside,
             );
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);

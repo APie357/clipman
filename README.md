@@ -165,8 +165,9 @@ checked against a SHA-256, and caches it in `~/.cache/clipman/`.
 ## Downloads
 
 Prebuilt binaries are on the [releases page](https://github.com/APie357/clipman/releases):
-a Linux AppImage and tarball, and a zipped Windows `.exe`. ffmpeg isn't included; clipman
-uses the installed one or downloads it on first run (see below).
+a Linux AppImage, Flatpak bundle and tarball, and a zipped Windows `.exe`. ffmpeg isn't
+included in the AppImage, tarball or `.exe`; clipman uses the installed one or downloads it
+on first run (see below). The Flatpak uses the Freedesktop runtime's ffmpeg.
 
 ## Building and installing
 
@@ -177,14 +178,10 @@ on `PATH`. If neither has them, it downloads a build into its data folder
 **Linux:**
 
 ```sh
-scripts/install.sh                   # build, install ~/.local/bin/clipman, desktop entry, Thunar menu
-scripts/install.sh --hyprland        # also float + center its windows in Hyprland (Lua config)
-scripts/install.sh --gsr             # also install the GPU Screen Recorder config in extras/
-scripts/install.sh --save-gsr        # copy your live GSR config into extras/
+./install.sh        # build, install ~/.local/bin/clipman, desktop entry, Thunar menu
 ```
 
-Each file is backed up before it's changed, and re-running the script changes nothing more.
-The opt-in extras live in `extras/`.
+Re-running it changes nothing more; Thunar's `uca.xml` is backed up before it's changed.
 
 **Arch Linux package:** `packaging/arch/PKGBUILD` builds `clipman-video-git` from the latest
 commit on GitHub. It's not called `clipman`, because the AUR's `clipman` / `clipman-git` are an
@@ -196,11 +193,25 @@ cd packaging/arch && makepkg -si
 clipman --write-menu          # per user, if you want the Thunar right-click entries
 ```
 
-The package puts the Hyprland rule and the GSR config in `/usr/share/clipman/`.
+**AppImage:** `packaging/appimage/build-appimage.sh` builds
+`target/appimage/Clipman-<version>-x86_64.AppImage` (it downloads
+[linuxdeploy](https://github.com/linuxdeploy/linuxdeploy) into `target/tools` on first run).
+ffmpeg isn't bundled: the AppImage uses the system's, or downloads one on first run.
 
-**AppImage:** `scripts/build-appimage.sh` builds `target/appimage/Clipman-<version>-x86_64.AppImage`
-(it downloads [linuxdeploy](https://github.com/linuxdeploy/linuxdeploy) into `target/tools` on
-first run). ffmpeg isn't bundled: the AppImage uses the system's, or downloads one on first run.
+**Flatpak:** `packaging/flatpak/build-flatpak.sh` builds
+`target/flatpak/Clipman-<version>-x86_64.flatpak` (needs `flatpak-builder` or
+`flatpak install flathub org.flatpak.Builder`; it installs the Freedesktop SDK and its Rust
+extension from Flathub). Install a bundle with `flatpak install --user Clipman-*.flatpak` and
+start it with `flatpak run men.goobers.clipman`. Inside the sandbox:
+
+- ffmpeg comes from the Freedesktop runtime (with its codecs-extra extension: x264, VAAPI,
+  `arnndn`), so nothing is downloaded.
+- Settings and plugins live in `~/.var/app/men.goobers.clipman/config/clipman/`, not
+  `~/.config/clipman/`.
+- It can read and write your home folder (clips, sidecars, exports, Thunar's menu file), and
+  *Regenerate right-click menu* writes entries that run `flatpak run men.goobers.clipman`.
+- Plugins' `clipman.spawn` runs programs inside the sandbox, so host tools such as `wl-copy`
+  aren't there.
 
 **Windows:** `cargo build --release` gives `target\release\clipman.exe`. It runs without a
 console window and still prints to the terminal when started from one. Put it wherever you
@@ -210,20 +221,13 @@ on Windows 11 it's under *Show more options*). Run it again after moving the exe
 `clipman --remove-menu` before deleting it. Explorer starts one clipman per selected file.
 
 **CI:** `.github/workflows/build.yml` tests and builds on every push to `main` and on pull
-requests: a Linux binary and AppImage (built on Ubuntu 22.04 so they run on older distros too)
-and a Windows `.exe` (zipped), uploaded as workflow artifacts. Pushing a `v*` tag (e.g.
+requests: a Linux binary and AppImage (built on Ubuntu 22.04 so they run on older distros too),
+a Flatpak bundle and a Windows `.exe` (zipped), uploaded as workflow artifacts. Pushing a `v*` tag (e.g.
 `git tag v0.2.0 && git push --tags`) also publishes them as a GitHub release.
 
 Without network access, build with `--no-default-features`; ffmpeg and the noise model then
 have to be installed by hand. `--no-default-features --features download` keeps the downloads
 but leaves out the update checker (for packages managed by a package manager).
-
-## GPU Screen Recorder config
-
-`extras/gpu-screen-recorder/config_ui` is a snapshot of my GSR UI settings: a 60 s replay
-buffer in RAM, 1080p60 at 40 Mbps, saved to `~/Videos`, with three named audio tracks:
-**Game** (all apps except Discord, Brave and Feishin), **Voice** (mic) and **Discord**. Your
-home directory is stored as `@HOME@`.
 
 ## License
 
