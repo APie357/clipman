@@ -20,7 +20,7 @@ Working examples are in [`examples/plugins`](../examples/plugins):
 
 | Plugin | Shows |
 |---|---|
-| `game-tags` | a window, sidecar metadata, badges, a browser filter, export metadata and a title tag, settings |
+| `game-tags` | a window, sidecar metadata, badges, a browser filter, export metadata and a title tag, settings, tags from the file name |
 | `bookmarks` | its own dropdown menu, timeline markers, setting the range, shortcuts, `on_clip_opened` |
 | `watermark` | an ffmpeg video filter (`drawtext`), choice and number settings |
 | `copy-after-export` | `on_export_done`, running a program, a file manager action |

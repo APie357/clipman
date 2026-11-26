@@ -3,11 +3,47 @@
 --
 -- The tags live in a sidecar next to the clip (Replay_….mp4.clipman.json), so the
 -- recording itself is never rewritten.
+--
+-- Clips without saved tags can get their game from the file name: the "File name
+-- rules" setting maps text in the name to a game, e.g. "minecraft = Minecraft;
+-- cs2 = Counter-Strike 2". Those tags are worked out on the fly (no sidecar is
+-- written), so changing the rules retags every clip that wasn't tagged by hand.
 
 local editing = nil -- { path = …, game = …, notes = … } while the window is open
 
+-- "text = Game; text2 = Game 2" -> { { text = "text", game = "Game" }, … }, cached
+-- per rules string because badges and filters ask for every clip
+local parsed = { src = nil, rules = {} }
+local function rules()
+  local src = clipman.settings.rules or ""
+  if parsed.src ~= src then
+    local list = {}
+    for rule in (src .. ";"):gmatch("([^;\n]*)[;\n]") do
+      local text, game = rule:match("^%s*(.-)%s*=%s*(.-)%s*$")
+      if text and text ~= "" and game ~= "" then
+        list[#list + 1] = { text = text:lower(), game = game }
+      end
+    end
+    parsed = { src = src, rules = list }
+  end
+  return parsed.rules
+end
+
+-- the game the first matching rule gives this clip's file name, or nil
+local function game_from_name(path)
+  local name = (path:match("[^/\\]+$") or path):lower()
+  for _, r in ipairs(rules()) do
+    if name:find(r.text, 1, true) then return r.game end
+  end
+end
+
+-- saved tags, else the game from the file name (auto = true), else {}
 local function tags_of(path)
-  return clipman.meta.get(path) or {}
+  local t = clipman.meta.get(path)
+  if t then return t end
+  local game = game_from_name(path)
+  if game then return { game = game, auto = true } end
+  return {}
 end
 
 local function edit(path)
@@ -29,6 +65,9 @@ return {
   settings = {
     { key = "default_game", label = "Default game", default = "",
       help = "Filled in for clips that have no tag yet" },
+    { key = "rules", label = "File name rules", default = "",
+      help = "Tags untagged clips whose file name contains the text, e.g. " ..
+        "\"minecraft = Minecraft; cs2 = Counter-Strike 2\" (any case, first match wins)" },
     { key = "title_tag", label = "Write a title tag", type = "bool", default = true,
       help = "Exports get a title like \"Minecraft: first diamond\"" },
   },
@@ -109,8 +148,8 @@ return {
 
   -- exports carry the source's tags (in the clipman tag, as plugins["game-tags"])
   on_export_start = function(job)
-    local t = clipman.meta.get(job.src)
-    if not t then return nil end
+    local t = tags_of(job.src)
+    if not t.game then return nil end
     local edits = { meta = t }
     if clipman.settings.title_tag and (t.game or "") ~= "" then
       local title = t.game

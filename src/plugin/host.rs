@@ -1866,6 +1866,44 @@ mod tests {
     }
 
     #[test]
+    fn game_tags_from_file_name() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/plugins");
+        let mut s = Settings::default();
+        s.plugins.insert(
+            "game-tags".into(),
+            PluginCfg {
+                enabled: true,
+                values: [(
+                    "rules".to_string(),
+                    " minecraft = Minecraft ; cs2=Counter-Strike 2;broken".into(),
+                )]
+                .into_iter()
+                .collect(),
+            },
+        );
+        let mut h = Host::load_from(dir, &s);
+        let mc = Path::new("/clips/MINECRAFT_2026-11-25.mp4");
+        let cs = Path::new("/clips/cs2_ace.mp4");
+        let other = Path::new("/clips/Replay_2026-11-25.mp4");
+        assert_eq!(h.badges(mc), ["Minecraft"]);
+        assert_eq!(h.badges(cs), ["Counter-Strike 2"]);
+        assert!(h.badges(other).is_empty());
+        let clips = [mc.to_path_buf(), cs.to_path_buf(), other.to_path_buf()];
+        let f = h
+            .browser_filters(&clips)
+            .into_iter()
+            .find(|f| f.plugin_id == "game-tags")
+            .unwrap();
+        assert_eq!(f.options, ["Counter-Strike 2", "Minecraft"]);
+        assert!(h.filter_matches("game-tags", "game", mc, "Minecraft"));
+        assert!(!h.filter_matches("game-tags", "game", other, "Minecraft"));
+        let mut j = job();
+        j.src = cs.into();
+        let x = h.export_start(&j).unwrap();
+        assert_eq!(x.tags, [("title".to_string(), "Counter-Strike 2".to_string())]);
+    }
+
+    #[test]
     fn bookmarks_example() {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/plugins");
         let mut h = Host::load_from(dir, &Settings::default());
